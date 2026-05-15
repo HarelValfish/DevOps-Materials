@@ -6,7 +6,7 @@
 2. Introduction to GitHub Actions
 3. Workflows, Events, and Runners
 4. Working with YAML and Building Pipelines
-5. Automated Build Processes
+5. Workflows and Events - Deep Dive
 6. Integrating Docker into CI/CD
 7. Working with Secrets and Environment Variables
 8. Automated Deployments
@@ -710,3 +710,797 @@ Explain:
 - Expressions make workflows more dynamic and reusable
 
 At this stage, keep the explanation simple. The goal is only to introduce the idea that workflows can use information from the event that triggered them.
+
+---
+
+## 5. Workflows and Events - Deep Dive
+
+Based on Presentation 8.3
+
+### 5.1 Understanding Events in GitHub Actions
+
+Start by returning to the question of what actually causes a workflow to run.
+
+Explain that an event is an action that happens inside GitHub. GitHub Actions listens to these events, and when the workflow file is configured for a matching event, GitHub starts the workflow automatically.
+
+Examples of GitHub events:
+
+- Code is pushed to a branch
+- Pull Request is opened or updated
+- Pull Request is closed
+- Workflow is started manually from the GitHub UI
+- Workflow is started on a schedule
+- Issue is opened, edited, or closed
+- Tag or branch is created
+
+Emphasize that GitHub Actions is event-driven automation.
+
+The workflow does not run because someone opened VS Code or because the file exists locally. It runs because something happened in GitHub and the workflow was configured to react to that event.
+
+---
+
+### 5.2 Main Types of Workflow Events
+
+Introduce the main event families in a high-level way before writing YAML.
+
+Repository-related events:
+
+- `push`
+- `pull_request`
+- `issues`
+- Creating branches or tags
+- Fork-related activity
+
+Manual events:
+
+- `workflow_dispatch`
+
+Scheduled events:
+
+- `schedule`
+
+Explain that each event is useful for a different automation scenario.
+
+Examples:
+
+- Use `push` when every code update should trigger validation
+- Use `pull_request` when code should be tested before merging
+- Use `workflow_dispatch` when a human should be able to start the pipeline manually
+- Use `schedule` when automation should run at fixed times, such as nightly checks
+
+At this stage, keep the message simple:
+
+The event answers the question: "When should this workflow start?"
+
+---
+
+### 5.3 Moving from the React Example to a Backend Project
+
+Explain that until now the students worked with a frontend-style React project and basic CI workflows. In this chapter, the goal is to move into a backend project and use it to understand workflow triggers more deeply.
+
+Introduce the Express project from the presentation.
+
+The project includes:
+
+- Basic Express server
+- API for managing users
+- Health routes
+- Environment configuration
+- Middleware
+- Unit and integration tests
+- Standard `package.json` scripts
+
+Emphasize that the focus is not learning Express. The backend project is simply a realistic target for GitHub Actions.
+
+The important point is that CI/CD workflows work with any project type:
+
+- React
+- Node.js backend
+- Python
+- Java
+- Docker-based applications
+- Infrastructure repositories
+
+The commands may change, but the GitHub Actions structure stays similar.
+
+---
+
+### 5.4 Preparing the Backend Project
+
+Demonstrate the project preparation flow.
+
+Suggested classroom flow:
+
+1. Download or copy the example Express project
+2. Extract the files into a new folder
+3. Initialize a local Git repository if needed
+4. Create a GitHub repository
+5. Push the project to GitHub
+
+Explain that GitHub Actions only runs from a GitHub repository. Local files alone are not enough.
+
+Before writing workflows, quickly show the project structure:
+
+```text
+src/
++-- app.ts
++-- server.ts
++-- config/
++-- middleware/
++-- modules/
++-- routes/
+tests/
++-- users.test.ts
+package.json
+package-lock.json
+```
+
+The goal is to help students understand what the workflow will later validate.
+
+---
+
+### 5.5 Running the Backend Project Locally
+
+Run the backend project locally before automating it.
+
+Commands demonstrated:
+
+```bash
+npm install
+npm run dev
+```
+
+Explain that local execution gives confidence that the application itself works before debugging GitHub Actions.
+
+Demonstrate:
+
+- Installing dependencies
+- Starting the development server
+- Opening or testing the local API
+- Stopping the server before continuing
+
+Emphasize again that CI/CD is usually automation of commands that developers already understand locally.
+
+---
+
+### 5.6 Running Backend Tests Locally
+
+Run the test command locally.
+
+Command demonstrated:
+
+```bash
+npm test
+```
+
+Explain that this project already contains tests, and the test command will later become the core validation step inside the workflow.
+
+Students should understand:
+
+- The test command must pass locally before it is trusted in CI
+- GitHub Actions will execute the same command on a clean runner
+- If the command fails locally, it will usually fail in GitHub Actions too
+- Debugging locally is often faster than debugging only through remote logs
+
+This prepares the class for the next step: moving the same test process into automation.
+
+---
+
+### 5.7 Creating the GitHub Actions Folder Structure
+
+Create the required workflow folder structure inside the backend project.
+
+Required structure:
+
+```text
+.github/
++-- workflows/
+```
+
+Create a workflow file:
+
+```text
+.github/workflows/test.yaml
+```
+
+Explain:
+
+- `.github` is the special GitHub configuration folder
+- `workflows` is where GitHub looks for workflow files
+- Workflow files are YAML files
+- GitHub detects them only after they are committed and pushed
+
+This is another important reminder that GitHub Actions is repository configuration, not a separate external tool.
+
+---
+
+### 5.8 Starting with the `push` Event
+
+Introduce `push` as one of the most common GitHub Actions events.
+
+Basic example:
+
+```yaml
+on: push
+```
+
+Explain that this means the workflow will run when code is pushed to the repository.
+
+Then explain the problem:
+
+`on: push` is powerful, but it is also very general. By default, it can react to pushes on different branches, and that may create unnecessary workflow runs.
+
+Examples of when this can become a problem:
+
+- Running tests for every temporary branch
+- Triggering deployment logic from development branches
+- Wasting runner minutes on irrelevant changes
+- Running production-related workflows too early
+
+The main teaching point:
+
+A trigger should be as broad as needed, but as specific as the real workflow requires.
+
+---
+
+### 5.9 Adding Multiple Events to One Workflow
+
+Explain that one workflow can listen to more than one event.
+
+For example, a workflow can run automatically after a push and also allow manual execution from the Actions tab.
+
+Example:
+
+```yaml
+on:
+  push:
+  workflow_dispatch:
+```
+
+Explain:
+
+- `push` runs the workflow automatically after code is pushed
+- `workflow_dispatch` adds a manual Run workflow button in GitHub
+- Multiple events make the workflow more flexible
+
+Emphasize a small syntax point:
+
+When using expanded YAML syntax, even an event with no extra configuration should include the colon:
+
+```yaml
+workflow_dispatch:
+```
+
+This prevents confusion when students move from the short syntax to the full syntax.
+
+---
+
+### 5.10 Filtering `push` by Branch
+
+Explain that workflows often should run only for specific branches.
+
+Example:
+
+```yaml
+on:
+  push:
+    branches:
+      - main
+```
+
+Explain that this workflow runs only when code is pushed to `main`.
+
+This is useful when:
+
+- `main` represents stable code
+- Deployment should happen only from `main`
+- Development branches should not trigger production workflows
+- The team wants to reduce unnecessary CI runs
+
+Connect this to real DevOps behavior:
+
+In many companies, different branches represent different environments.
+
+Examples:
+
+- `dev`
+- `test`
+- `staging`
+- `main`
+- `release/*`
+
+The workflow trigger should match the purpose of the environment.
+
+---
+
+### 5.11 Ignoring Branches and Using Branch Patterns
+
+Introduce the opposite approach: instead of saying which branches should trigger the workflow, we can say which branches should not trigger it.
+
+Example:
+
+```yaml
+on:
+  push:
+    branches-ignore:
+      - dev
+      - "temp-*"
+```
+
+Explain:
+
+- Pushes to `dev` will not trigger the workflow
+- Pushes to branches that start with `temp-` will not trigger the workflow
+- Other branches can still trigger it
+
+Introduce wildcard patterns carefully.
+
+Examples:
+
+- `release/*` can match release branches
+- `feature/**` can match nested feature branch patterns
+- `temp-*` can match temporary branch names
+
+Do not go too deep into every pattern rule yet. The goal is to show students that GitHub Actions can control workflow execution based on branch naming.
+
+---
+
+### 5.12 Filtering by File Paths
+
+Explain that workflows can also run only when specific files or folders change.
+
+Example:
+
+```yaml
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+```
+
+Explain:
+
+- The workflow runs only on pushes to `main`
+- It runs only if files under `src/` changed
+- Changes to unrelated files may not trigger the workflow
+
+This is useful in repositories where not every change needs the same pipeline.
+
+Examples:
+
+- Source code changes should run tests
+- Documentation-only changes may not need a full build
+- Infrastructure changes may need a different workflow
+- Frontend and backend folders may have separate pipelines
+
+Then introduce path exclusions.
+
+Example:
+
+```yaml
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "!docs/**"
+```
+
+Explain that `!docs/**` excludes documentation paths from this trigger pattern.
+
+Emphasize that path filters help reduce unnecessary runs and keep CI/CD focused on relevant changes.
+
+---
+
+### 5.13 Combining Branch and Path Filters
+
+Show a fuller example that combines multiple filters.
+
+Example:
+
+```yaml
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+    paths-ignore:
+      - ".github/workflows/**"
+```
+
+Explain the meaning:
+
+- The workflow runs only for pushes to `main` or branches under `release/**`
+- It does not run when only workflow files changed
+- The trigger becomes much more intentional
+
+Explain that filters are not only a performance optimization. They are also part of pipeline design.
+
+Good trigger design helps protect:
+
+- Production environments
+- Paid runner minutes
+- Developer focus
+- CI/CD reliability
+
+---
+
+### 5.14 Understanding `pull_request` Events
+
+Introduce Pull Request automation.
+
+Basic example:
+
+```yaml
+on:
+  pull_request:
+    branches:
+      - main
+```
+
+Explain that this workflow runs when a Pull Request targets the `main` branch.
+
+This is one of the most important CI use cases:
+
+Before code enters the main branch, GitHub Actions can automatically test it.
+
+Explain the difference between `push` and `pull_request`:
+
+- `push` reacts when code is pushed to a branch
+- `pull_request` reacts to PR activity before or during the merge process
+
+In real teams, Pull Request workflows are often used as a quality gate before merge.
+
+---
+
+### 5.15 Activity Types in Pull Requests
+
+Explain that some events have smaller sub-events called activity types.
+
+For `pull_request`, common activity types include:
+
+- `opened`
+- `closed`
+- `reopened`
+- `synchronize`
+- `edited`
+
+Explain each one briefly:
+
+- `opened` means the Pull Request was created
+- `closed` means the Pull Request was closed or merged
+- `reopened` means a closed Pull Request was opened again
+- `synchronize` usually means new commits were pushed to the Pull Request
+- `edited` means Pull Request metadata was changed
+
+Example:
+
+```yaml
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - closed
+```
+
+Explain:
+
+- The workflow runs when a Pull Request to `main` is opened
+- The workflow also runs when that Pull Request is closed
+- It will not run for every small PR update unless that activity type is included
+
+This gives much more control than a broad Pull Request trigger.
+
+---
+
+### 5.16 Default Behavior of `pull_request`
+
+Explain an important detail from the presentation:
+
+If we configure only this:
+
+```yaml
+on:
+  pull_request:
+```
+
+GitHub does not run the workflow for every possible Pull Request action.
+
+By default, common Pull Request runs happen for actions such as:
+
+- `opened`
+- `reopened`
+- `synchronize`
+
+Explain that `closed` is not included by default.
+
+Therefore, if the workflow must run when a Pull Request is closed or merged, the workflow should explicitly include `closed`.
+
+Example:
+
+```yaml
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - closed
+```
+
+The main point:
+
+Do not assume every PR action triggers the workflow. Use `types` when the exact behavior matters.
+
+---
+
+### 5.17 Building the Backend Test Workflow
+
+Now connect the event discussion to the real backend workflow.
+
+Example workflow:
+
+```yaml
+name: Test Project
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "!docs/**"
+
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - closed
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+```
+
+Explain the workflow section by section:
+
+- `name` gives the workflow a readable name in the Actions tab
+- `push` controls automatic runs after pushes
+- `branches` limits the push trigger to `main`
+- `paths` limits the workflow to relevant file changes
+- `pull_request` runs automation for Pull Requests targeting `main`
+- `types` controls which PR actions start the workflow
+- `jobs.test` defines the test job
+- `actions/checkout` downloads the repository into the runner
+- `npm ci` installs dependencies cleanly
+- `npm test` runs the test suite
+
+Emphasize that the workflow is now much more intentional than a simple `on: push`.
+
+It reacts only to events that matter for the project.
+
+---
+
+### 5.18 Demonstrating the Workflow in GitHub
+
+Commit and push the workflow file.
+
+Demonstrate:
+
+- Push to `main` with a change under `src/`
+- Confirm that the workflow starts
+- Open the Actions tab
+- Open the workflow run
+- Inspect the job logs
+- Confirm that dependencies install and tests run
+
+Then demonstrate a change that should not trigger the workflow.
+
+Example:
+
+- Change a documentation file
+- Push the change
+- Show that the workflow does not run if the filters exclude that path
+
+The goal is to make students see that filters are real behavior, not only YAML theory.
+
+---
+
+### 5.19 Demonstrating Pull Request Activity Types
+
+Create a short Pull Request demonstration.
+
+Suggested flow:
+
+1. Create a new branch
+2. Make a small change
+3. Push the branch
+4. Open a Pull Request into `main`
+5. Show that the workflow runs because the PR was opened
+6. Close the Pull Request
+7. Show that the workflow runs again if `closed` is included in `types`
+
+Explain that this is why activity types matter.
+
+Without `types: [opened, closed]`, the workflow behavior may not match what the team expects.
+
+This is especially important when workflows are connected to:
+
+- Deployment cleanup
+- Release notes
+- Notifications
+- Environment cleanup
+- Post-merge automation
+
+---
+
+### 5.20 Pull Requests from Forks
+
+Introduce a real-world scenario:
+
+A public repository allows outside contributors. A contributor forks the repository, changes code, and opens a Pull Request back into the original repository.
+
+Explain the flow:
+
+1. A user forks the repository
+2. The user changes code in the fork
+3. The user opens a Pull Request to the original repository
+4. The workflow appears like it should run because it is a Pull Request to `main`
+
+Then explain the important security behavior:
+
+For first-time contributors, GitHub may not run the workflow automatically. Instead, the repository owner may see a message that approval is required before the workflow can run.
+
+Explain why:
+
+- Anyone can fork a public repository
+- A fork can contain untrusted code
+- A malicious user could try to run harmful workflow commands
+- A user could also waste runner minutes by triggering many workflows
+
+GitHub protects the repository by requiring manual approval for first-time contributors.
+
+Emphasize:
+
+If a workflow does not run automatically for a new external contributor, it does not necessarily mean the YAML is broken.
+
+The owner may need to approve the run from the Actions or Pull Request interface.
+
+---
+
+### 5.21 Collaborators vs First-Time Contributors
+
+Explain the difference between trusted and untrusted contributors.
+
+First-time contributor from a fork:
+
+- Workflow may be skipped at first
+- Repository owner may need to approve the run
+- After approval, future behavior may become smoother for that contributor
+
+Repository collaborator:
+
+- User is already trusted by the repository
+- Workflow usually does not require the same first-time approval
+- GitHub assumes the collaborator has permission to contribute
+
+Explain that this topic connects directly to CI/CD security.
+
+Automation is powerful, but automation that runs untrusted code must be treated carefully.
+
+---
+
+### 5.22 Canceling Workflow Runs
+
+Introduce workflow cancellation.
+
+Explain that sometimes a workflow is already running, but we know it is no longer useful.
+
+Examples:
+
+- A mistake is noticed immediately after push
+- A newer commit already replaces the old one
+- The run is taking too long
+- The workflow is consuming resources unnecessarily
+- The wrong branch triggered the workflow
+
+Demonstrate manual cancellation:
+
+1. Open the repository in GitHub
+2. Go to the Actions tab
+3. Open the active workflow run
+4. Click Cancel workflow
+
+Explain that cancellation is used after a workflow has already started.
+
+Also explain basic failure behavior:
+
+- If a step fails, the job usually fails
+- If the job fails, the workflow run becomes failed
+- Unless configured differently, later dependent work will not continue
+
+This connects back to the idea that CI/CD pipelines should stop when validation fails.
+
+---
+
+### 5.23 Skipping Workflow Runs
+
+Introduce workflow skipping.
+
+Explain that sometimes a developer knows before pushing that the change does not require CI/CD.
+
+Examples:
+
+- Documentation-only update
+- Comment-only change
+- README update
+- Small text change that does not affect build or tests
+
+Explain that GitHub supports skip keywords in commit messages or Pull Request titles.
+
+Common examples:
+
+```text
+[skip ci]
+[ci skip]
+[skip actions]
+[actions skip]
+```
+
+Example commit message:
+
+```text
+docs: update README [skip ci]
+```
+
+Explain:
+
+- The push still happens
+- The commit still reaches GitHub
+- The workflow is skipped before it starts
+
+Emphasize that skipping should be used carefully. It is useful for clearly safe changes, but it should not become a habit for avoiding tests.
+
+---
+
+### 5.24 Cancel vs Skip
+
+Conclude the chapter by comparing canceling and skipping.
+
+Cancel:
+
+- Used after the workflow already started
+- Useful when a mistake is discovered during or after a push
+- Saves time and resources from an unnecessary active run
+- Done from the GitHub UI
+
+Skip:
+
+- Used before the workflow starts
+- Controlled through commit message or Pull Request title
+- Useful when the change clearly does not require automation
+- Prevents the run from starting in the first place
+
+Simple classroom summary:
+
+- Use cancel when the workflow is already running and should stop
+- Use skip when you know in advance that the workflow should not run
+
+Finish with the bigger idea:
+
+Good CI/CD design is not only about writing jobs and steps. It is also about controlling when automation should run, when it should wait, and when it should not run at all.
