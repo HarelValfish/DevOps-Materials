@@ -778,7 +778,7 @@ The event answers the question: "When should this workflow start?"
 
 Explain that until now the students worked with a frontend-style React project and basic CI workflows. In this chapter, the goal is to move into a backend project and use it to understand workflow triggers more deeply.
 
-Introduce the Express project from the presentation.
+Introduce the Express project we will work on.
 
 The project includes:
 
