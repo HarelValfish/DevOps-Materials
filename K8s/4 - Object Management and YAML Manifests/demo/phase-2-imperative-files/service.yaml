@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: version-app
+  labels:
+    app: version-app
+spec:
+  type: NodePort
+  selector:
+    app: version-app        # must match the Pod labels in deployment.yaml
+  ports:
+    - port: 80              # port the Service exposes inside the cluster
+      targetPort: 3000      # container port the app listens on
+      nodePort: 30080       # fixed node port so the URL is stable during the demo

@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: version-app
+  labels:
+    app: version-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: version-app
+  template:
+    metadata:
+      labels:
+        app: version-app
+    spec:
+      containers:
+        - name: version-app
+          image: lironefitoussi/version-app:1.0.0
+          imagePullPolicy: IfNotPresent   # use the image we loaded into Minikube, don't pull from a registry
+          ports:
+            - containerPort: 3000
