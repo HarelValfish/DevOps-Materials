@@ -1,34 +1,35 @@
 # Lab 9 — Production Backend Deployment
 
-## GitHub Actions → ECR → ALB → EC2 (No SSH, No Keys)
+## GitHub Actions → ECR → ALB + ASG (No SSH, No Keys)
 
 ### Goal
 
-By the end of this lab, every push to `main` triggers a fully automated deployment. The final output of the pipeline is a real DNS name:
+By the end of this lab, every push to `main` triggers a fully automated deployment across all running instances. The final output of the pipeline is a real DNS name:
 
 ```
 Git Push
     ↓
 GitHub Actions
     ↓
-OIDC Login to AWS          ← no access keys stored anywhere
+OIDC Login to AWS              ← no access keys stored anywhere
     ↓
 Build Docker Image
     ↓
 Push Image to ECR
     ↓
-SSM Send Command            ← no SSH, port 22 stays closed
-    ↓
-EC2 Pull New Image
-    ↓
-Restart Container
+SSM Send Command               ← targets all ASG instances by tag
+    ↓                             no SSH, port 22 stays closed
+Every EC2 in ASG:
+  Pull new image
+  Stop old container
+  Start new container
     ↓
 Health Check via ALB
     ↓
 ✅ http://<alb-dns-name>.elb.amazonaws.com
 ```
 
-**No AWS access keys stored in GitHub. No SSH keys. Port 22 closed. EC2 not directly exposed to the internet.**
+**No AWS access keys in GitHub. No SSH. Port 22 closed. Instances managed by ASG. Deployment runs on all instances simultaneously.**
 
 ---
 
@@ -59,11 +60,11 @@ express-api/
 
 Add these under **Settings → Secrets and variables → Actions**:
 
-| Secret              | Value                                                                                       |
-|---------------------|---------------------------------------------------------------------------------------------|
-| `AWS_ROLE_ARN`      | ARN of the IAM role you create in Part B                                                   |
-| `EC2_INSTANCE_ID`   | Your EC2 instance ID (e.g. `i-0abc1234def567890`)                                         |
-| `ALB_DNS_NAME`      | ALB DNS name from Task 6 (e.g. `student-api-alb-123456789.us-east-1.elb.amazonaws.com`)   |
+| Secret          | Value                                                                                         |
+|-----------------|-----------------------------------------------------------------------------------------------|
+| `AWS_ROLE_ARN`  | ARN of the IAM role you create in Part B                                                     |
+| `ASG_NAME`      | Name of the Auto Scaling Group you create in Task 7                                          |
+| `ALB_DNS_NAME`  | ALB DNS name from Task 6 (e.g. `student-api-alb-123456789.us-east-1.elb.amazonaws.com`)     |
 
 ---
 
@@ -73,16 +74,19 @@ Add these under **Settings → Secrets and variables → Actions**:
 Internet
     │  HTTP :80
     ▼
-Application Load Balancer   (alb-sg: allows :80 from internet)
+Application Load Balancer          (alb-sg: allows :80 from internet)
     │  HTTP :3000
     ▼
-EC2 Instance                (ec2-sg: allows :3000 from alb-sg only)
-    │
-    ▼
-Docker Container            (Express API on port 3000)
+Auto Scaling Group
+    ├── EC2 Instance A             (ec2-sg: allows :3000 from alb-sg only)
+    │       └── Docker Container   (student-api on port 3000)
+    └── EC2 Instance B             (spins up automatically if A fails)
+            └── Docker Container   (student-api on port 3000)
 ```
 
-The EC2 has no open ports reachable from the internet. Management is handled exclusively through AWS Systems Manager.
+- **Why ASG?** A single EC2 is a single point of failure. The ASG replaces unhealthy instances automatically. It also allows horizontal scaling.
+- **Why ALB?** It distributes traffic across all healthy instances and provides the DNS name.
+- **Why SSM targeting by tag?** The pipeline targets all ASG instances by group tag — no hardcoded instance IDs. When the ASG launches a new instance it is automatically included in the next deployment.
 
 ---
 
@@ -100,127 +104,86 @@ The EC2 has no open ports reachable from the internet. Management is handled exc
 
 ---
 
-### Task 2 — Launch EC2 Instance
+### Task 2 — Create Security Groups
 
-Create **two security groups first**, then launch the instance.
+Create **two security groups** before anything else.
 
 #### Security Group 1 — `alb-sg`
 
 | Direction | Protocol | Port | Source       |
-|-----------|----------|------|--------------|
-| Inbound   | TCP      | 80   | `0.0.0.0/0` |
-| Outbound  | All      | All  | `0.0.0.0/0` |
+|-----------|----------|------|-------------- |
+| Inbound   | TCP      | 80   | `0.0.0.0/0`  |
+| Outbound  | All      | All  | `0.0.0.0/0`  |
 
 #### Security Group 2 — `ec2-sg`
 
-| Direction | Protocol | Port | Source                       |
-|-----------|----------|------|------------------------------|
-| Inbound   | TCP      | 3000 | `alb-sg` (select from list)  |
-| Outbound  | All      | All  | `0.0.0.0/0`                  |
+| Direction | Protocol | Port | Source                      |
+|-----------|----------|------|-----------------------------|
+| Inbound   | TCP      | 3000 | `alb-sg` (select from list) |
+| Outbound  | All      | All  | `0.0.0.0/0`                 |
 
-> **Why no port 22 and no port 443 inbound?**
-> - Port 22 is not needed — there is no key pair and SSH is never used.
-> - Port 443 inbound is not needed for SSM. The SSM Agent makes *outbound* HTTPS connections to AWS endpoints, which the Outbound rule already covers.
-> - Port 3000 inbound is scoped to `alb-sg` only — the EC2 accepts application traffic exclusively from the ALB.
+> **Why only port 3000 inbound, and nothing else?**
+> - Port 22: not needed — no key pair, no SSH ever.
+> - Port 443 inbound: not needed — the SSM Agent makes *outbound* HTTPS connections to AWS. The outbound `All` rule covers this.
+> - Port 3000: scoped to `alb-sg` only, so the EC2 accepts application traffic exclusively from the ALB.
 
-#### Launch the EC2
-
-| Setting               | Value                         |
-|-----------------------|-------------------------------|
-| AMI                   | Ubuntu Server 22.04 LTS       |
-| Instance type         | t3.micro                      |
-| Subnet                | Any **public** subnet         |
-| Auto-assign public IP | Enable                        |
-| Key pair              | **Proceed without key pair**  |
-| Security group        | `ec2-sg`                      |
-
-**Deliverable:** EC2 instance in "Running" state.
+**Deliverable:** Both security groups created.
 
 ---
 
-### Task 3 — Create EC2 IAM Role and Register with SSM
+### Task 3 — Create EC2 IAM Role
 
-The EC2 needs an IAM role so that:
-- The SSM Agent can communicate with AWS Systems Manager
-- The Docker container can pull images from ECR
-
-> **Do this before installing Docker** — you will use SSM Session Manager (not SSH) to connect to the instance.
-
-#### Create the IAM Role
+Every EC2 instance in the ASG needs an IAM role so it can:
+- Register with Systems Manager (SSM Agent)
+- Pull Docker images from ECR
 
 1. Go to **IAM → Roles → Create role**
-2. Trusted entity type: **AWS service**
-3. Use case: **EC2**
-4. Attach these two managed policies:
+2. Trusted entity: **AWS service → EC2**
+3. Attach these two managed policies:
 
-| Policy                                 | Why                                           |
-|----------------------------------------|-----------------------------------------------|
-| `AmazonSSMManagedInstanceCore`         | Allows SSM Agent to register and receive commands |
-| `AmazonEC2ContainerRegistryReadOnly`   | Allows EC2 to pull images from ECR and call `aws ecr get-login-password` |
+| Policy                               | Why                                                              |
+|--------------------------------------|------------------------------------------------------------------|
+| `AmazonSSMManagedInstanceCore`       | Allows SSM Agent to register and receive commands                |
+| `AmazonEC2ContainerRegistryReadOnly` | Allows the EC2 to run `aws ecr get-login-password` and pull images |
 
-5. Name the role: `ec2-ssm-ecr-role`
-6. Create the role
+4. Name: `ec2-ssm-ecr-role`
+5. Create the role
 
-#### Attach the Role to the EC2
-
-1. Go to your EC2 instance
-2. **Actions → Security → Modify IAM role**
-3. Select `ec2-ssm-ecr-role` → Save
-
-#### Wait for SSM Registration
-
-Wait 2–3 minutes, then check:
-
-**Systems Manager → Fleet Manager → Managed Nodes**
-
-Your instance should appear here.
-
-**Deliverable:** EC2 visible as a Managed Node in Fleet Manager.
+**Deliverable:** IAM role `ec2-ssm-ecr-role` exists.
 
 ---
 
-### Task 4 — Install Docker and AWS CLI via SSM Session Manager
+### Task 4 — Create a Launch Template
 
-Now that the EC2 has an SSM role, connect to it **without SSH** using SSM Session Manager.
+A Launch Template defines the configuration for every EC2 the ASG launches. Using User Data, Docker and AWS CLI are installed automatically on every new instance — no manual step needed.
 
-#### Connect via Session Manager
-
-1. Go to **Systems Manager → Session Manager**
-2. Click **Start session**
-3. Select your EC2 instance
-4. Click **Start session** — a terminal opens in your browser
-
-#### Install Docker
-
-```bash
-sudo apt-get update -y
-sudo apt-get install -y docker.io
-sudo systemctl start docker
-sudo systemctl enable docker
-sudo usermod -aG docker ubuntu
-docker --version
-```
-
-#### Install AWS CLI
-
-The deployment script runs `aws ecr get-login-password` on the EC2. AWS CLI is not pre-installed on Ubuntu 22.04 — install it now:
+1. Go to **EC2 → Launch Templates → Create launch template**
+2. Name: `student-api-lt`
+3. AMI: search for **Ubuntu Server 22.04 LTS** (64-bit x86)
+4. Instance type: `t3.micro`
+5. Key pair: **Don't include in launch template** (no SSH)
+6. Security groups: `ec2-sg`
+7. IAM instance profile: `ec2-ssm-ecr-role`
+8. Expand **Advanced details** → paste the following into **User data**:
 
 ```bash
+#!/bin/bash
+set -e
+apt-get update -y
+apt-get install -y docker.io unzip curl
+systemctl start docker
+systemctl enable docker
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
-sudo apt-get install -y unzip
-unzip /tmp/awscliv2.zip -d /tmp
-sudo /tmp/aws/install
-aws --version
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
+rm -rf /tmp/aws /tmp/awscliv2.zip
 ```
 
-#### Verify
+> This script runs automatically every time the ASG launches a new instance. Docker and AWS CLI will be ready before the first pipeline deployment runs.
 
-```bash
-docker --version
-aws --version
-```
+9. Create launch template
 
-**Deliverable:** Both `docker --version` and `aws --version` return version output.
+**Deliverable:** Launch Template `student-api-lt` created.
 
 ---
 
@@ -232,9 +195,12 @@ aws --version
 4. Protocol: **HTTP**
 5. Port: **3000**
 6. Health check path: `/health`
-7. Click **Next** → select your EC2 → **Include as pending below** → **Create target group**
+7. Click **Next** — do **not** add any targets manually. The ASG will register instances automatically.
+8. Create target group
 
-**Deliverable:** Target group created with EC2 registered as a target (status: pending or healthy).
+> You will see the target group is empty for now. That is expected — the ASG fills it in Task 7.
+
+**Deliverable:** Target group `student-api-tg` created (no targets yet).
 
 ---
 
@@ -250,21 +216,51 @@ aws --version
 8. Listener: **HTTP :80 → Forward to `student-api-tg`**
 9. Create load balancer
 
-After creation, copy the **DNS name** shown in the ALB details.
+After creation, copy the **DNS name** from the ALB details page.
 
 > Example: `student-api-alb-123456789.us-east-1.elb.amazonaws.com`
 
 Add this as the `ALB_DNS_NAME` secret in your GitHub repository.
 
-**Deliverable:** ALB in "Active" state. DNS name saved as a repository secret.
+**Deliverable:** ALB in "Active" state. DNS name saved as a secret.
+
+---
+
+### Task 7 — Create the Auto Scaling Group
+
+1. Go to **EC2 → Auto Scaling Groups → Create Auto Scaling group**
+2. Name: `student-api-asg`
+3. Launch template: `student-api-lt`
+4. Network: select **the same Availability Zones** you chose for the ALB (important — subnets must match)
+5. Load balancing: **Attach to an existing load balancer** → choose `student-api-tg`
+6. Health checks: set type to **ELB** (the ASG will replace instances that the ALB marks unhealthy)
+7. Group size:
+
+| Setting          | Value |
+|------------------|-------|
+| Minimum capacity | 1     |
+| Desired capacity | 1     |
+| Maximum capacity | 2     |
+
+8. Create Auto Scaling group
+
+Save the ASG name (`student-api-asg`) as the `ASG_NAME` secret in your repository.
+
+> After creation:
+> - The ASG launches one EC2 instance automatically
+> - The instance runs the User Data script (Docker + AWS CLI install, ~2 min)
+> - SSM registers the instance automatically (another ~1 min)
+> - The ALB target group shows the instance as **unhealthy** because no container is running yet — this is expected. The first pipeline run will fix it.
+
+**Deliverable:** ASG created, one EC2 instance running, instance visible in Systems Manager → Fleet Manager → Managed Nodes.
 
 ---
 
 ## Part B — OIDC (Keyless AWS Authentication)
 
-### Task 7 — Create GitHub OIDC Trust
+### Task 8 — Create GitHub OIDC Trust
 
-GitHub Actions will authenticate to AWS using OpenID Connect. No access keys will be stored anywhere.
+GitHub Actions authenticates to AWS using OpenID Connect. No access keys are stored anywhere.
 
 Research: *"GitHub Actions OIDC AWS"*
 
@@ -278,14 +274,11 @@ In **IAM → Identity providers → Add provider**:
 | Provider URL  | `https://token.actions.githubusercontent.com` |
 | Audience      | `sts.amazonaws.com`                           |
 
-#### Step 2 — IAM Role with Trust Policy
+#### Step 2 — IAM Role with Scoped Trust Policy
 
-Create a new IAM Role:
-- Trusted entity: **Web identity**
-- Identity provider: `token.actions.githubusercontent.com`
-- Audience: `sts.amazonaws.com`
+Create a new IAM Role (trusted entity: **Web identity**, provider: `token.actions.githubusercontent.com`).
 
-After creation, edit the trust policy to scope it to your specific repository:
+Edit the trust policy to lock it to your repository:
 
 ```json
 {
@@ -312,7 +305,7 @@ After creation, edit the trust policy to scope it to your specific repository:
 
 #### Step 3 — Permissions for the Role
 
-Attach the following inline policy. This grants only what the CI/CD pipeline needs:
+Attach the following inline policy — only the exact actions the pipeline needs:
 
 ```json
 {
@@ -347,18 +340,26 @@ Attach the following inline policy. This grants only what the CI/CD pipeline nee
         "ssm:DescribeInstanceInformation"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "ASGDescribe",
+      "Effect": "Allow",
+      "Action": "autoscaling:DescribeAutoScalingGroups",
+      "Resource": "*"
     }
   ]
 }
 ```
 
-**Deliverable:** Copy the Role ARN → add it as the `AWS_ROLE_ARN` secret in your GitHub repository.
+> `autoscaling:DescribeAutoScalingGroups` is required so the pipeline can discover which instance IDs are currently in-service before waiting for the SSM command to finish on each one.
+
+**Deliverable:** Copy the Role ARN → add it as the `AWS_ROLE_ARN` secret.
 
 ---
 
 ## Part C — Local Docker Build
 
-### Task 8 — Build and Test the Container
+### Task 9 — Build and Test the Container
 
 1. Copy `express-api/` into your repository and install dependencies:
 
@@ -369,25 +370,20 @@ Attach the following inline policy. This grants only what the CI/CD pipeline nee
 
    > **Important:** commit the generated `package-lock.json`. The Dockerfile uses `npm ci` which requires it. Without this file the Docker build will fail.
 
-2. Build the Docker image:
+2. Build the image:
 
    ```bash
    docker build -t student-api:local .
    ```
 
-3. Run the container:
+3. Run and test:
 
    ```bash
    docker run -d -p 3000:3000 --name api-test student-api:local
-   ```
-
-4. Test:
-
-   ```bash
    curl http://localhost:3000/health
    ```
 
-5. Clean up:
+4. Clean up:
 
    ```bash
    docker stop api-test && docker rm api-test
@@ -399,11 +395,9 @@ Attach the following inline policy. This grants only what the CI/CD pipeline nee
 
 ## Part D — GitHub Actions CI
 
-### Task 9 — CI Pipeline
+### Task 10 — CI Pipeline
 
-Create `.github/workflows/ci.yml` in your repository.
-
-The pipeline:
+Create `.github/workflows/ci.yml`.
 
 ```
 Lint
@@ -413,20 +407,18 @@ Build Docker Image   (local only — no push yet)
 
 Requirements:
 - Trigger: `push` to `main` and `pull_request` to `main`
-- `lint` job: run `npm install` and `npm run lint` inside `express-api/`
-- `build` job: depends on `lint`, builds the image with `docker build -t ... ./express-api`
+- `lint` job: `npm install` + `npm run lint` inside `express-api/`
+- `build` job: depends on `lint`, runs `docker build -t ... ./express-api`
 
-**Deliverable:** Green CI workflow run in the Actions tab.
+**Deliverable:** Green CI workflow in the Actions tab.
 
 ---
 
 ## Part E — Push to ECR
 
-### Task 10 — Authenticate and Push
+### Task 11 — Authenticate and Push
 
-Update your workflow to authenticate to AWS via OIDC and push the image to ECR.
-
-**Required top-level permissions block** (OIDC will not work without this):
+Update your workflow. Add the required top-level permissions block — OIDC does not work without it:
 
 ```yaml
 permissions:
@@ -434,7 +426,7 @@ permissions:
   contents: read
 ```
 
-**Authentication step:**
+Authentication:
 
 ```yaml
 - name: Configure AWS credentials
@@ -444,7 +436,7 @@ permissions:
     aws-region: us-east-1
 ```
 
-**ECR login step:**
+ECR login:
 
 ```yaml
 - name: Login to ECR
@@ -452,39 +444,35 @@ permissions:
   uses: aws-actions/amazon-ecr-login@v2
 ```
 
-The `ecr-login` action outputs `registry` — the ECR registry URL (e.g. `123456789.dkr.ecr.us-east-1.amazonaws.com`). You will need this value in the deploy job.
+Push with **two tags** — `latest` and `${{ github.sha }}`.
 
-**Push the image with two tags:**
-- `latest` — convenient for humans
-- `${{ github.sha }}` — immutable, ties the image to an exact commit
+Save the full image URI as a job output so the `deploy` job can use it.
 
-**Deliverable:** After a push to `main`, the ECR repository shows both image tags.
+**Deliverable:** ECR shows both image tags after a push to `main`.
 
 ---
 
 ## Part F — Deployment
 
-### Task 11 — Deploy via SSM
+### Task 12 — Deploy via SSM to all ASG Instances
 
-Add a `deploy` job that runs after the image is pushed.
+Add a `deploy` job. It targets **all in-service instances** in the ASG by tag — you never need to hardcode an instance ID.
 
-The job uses `aws ssm send-command` to remotely execute a deployment script on the EC2 — no SSH required.
-
-#### Commands the EC2 must run, in order:
+#### Commands the EC2 instances run:
 
 ```bash
-# 1 — Authenticate Docker to ECR using the EC2's IAM role credentials
+# 1 — Authenticate Docker to ECR using the instance's IAM role
 aws ecr get-login-password --region <REGION> \
   | docker login --username AWS --password-stdin <ECR_REGISTRY>
 
 # 2 — Pull the new image
 docker pull <IMAGE>
 
-# 3 — Stop and remove the old container (ignore error if it doesn't exist yet)
+# 3 — Stop and remove the old container
 docker stop student-api 2>/dev/null || true
 docker rm   student-api 2>/dev/null || true
 
-# 4 — Start the new container on port 3000 (ALB target group forwards here)
+# 4 — Start the new container on port 3000
 docker run -d \
   --name student-api \
   --restart unless-stopped \
@@ -492,66 +480,58 @@ docker run -d \
   <IMAGE>
 ```
 
-> **Port note:** The container binds to port 3000. The ALB target group was configured to forward to port 3000. Do **not** use `-p 80:3000`.
-
-#### Building the SSM parameters safely with `jq`
-
-The `--parameters` flag for `aws ssm send-command` expects a JSON object. Use `jq` (pre-installed on GitHub Actions runners) to build it cleanly without shell quoting issues:
+#### Target all ASG instances by tag:
 
 ```bash
-PARAMS=$(jq -cn \
-  --arg region   "us-east-1" \
-  --arg registry "$REGISTRY" \
-  --arg image    "$IMAGE" \
-  --arg name     "student-api" \
-  '{commands: [
-    "aws ecr get-login-password --region \($region) | docker login --username AWS --password-stdin \($registry)",
-    "docker pull \($image)",
-    "docker stop \($name) 2>/dev/null || true",
-    "docker rm \($name) 2>/dev/null || true",
-    "docker run -d --name \($name) --restart unless-stopped -p 3000:3000 \($image)"
-  ]}')
-
 COMMAND_ID=$(aws ssm send-command \
-  --instance-ids  "${{ secrets.EC2_INSTANCE_ID }}" \
+  --targets       "Key=tag:aws:autoscaling:groupName,Values=${{ secrets.ASG_NAME }}" \
   --document-name "AWS-RunShellScript" \
   --parameters    "$PARAMS" \
   --query         "Command.CommandId" \
   --output        text)
-
-echo "command-id=$COMMAND_ID" >> $GITHUB_OUTPUT
 ```
 
-#### Wait for the command to complete
+> AWS automatically tags every ASG instance with `aws:autoscaling:groupName`. Using `--targets` instead of `--instance-ids` means the pipeline automatically covers all current and future instances — no changes needed when the ASG scales.
+
+#### Wait for all instances:
 
 ```bash
-aws ssm wait command-executed \
-  --command-id  "$COMMAND_ID" \
-  --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
+# Discover which instances are currently in-service
+INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
+  --auto-scaling-group-names "${{ secrets.ASG_NAME }}" \
+  --query "AutoScalingGroups[0].Instances[?LifecycleState=='InService'].InstanceId" \
+  --output text)
+
+# Wait for the SSM command to finish on each instance
+for INSTANCE_ID in $INSTANCE_IDS; do
+  echo "Waiting for $INSTANCE_ID..."
+  aws ssm wait command-executed \
+    --command-id  "<COMMAND_ID>" \
+    --instance-id "$INSTANCE_ID"
+done
 ```
 
-> **Note:** The `aws ssm wait command-executed` waiter polls every 5 seconds for up to 100 seconds. For a first deployment (fresh ECR image pull), this is usually enough. If your image is large, consider implementing a custom polling loop instead.
+**Tip:** Use `jq` (pre-installed on GitHub Actions runners) to build the `--parameters` JSON — it handles special characters in image URIs without quoting issues. See the solution workflow in `solution/.github/workflows/deploy.yml`.
 
-**Deliverable:** Workflow completes without errors. All 5 Docker steps succeed in the SSM command output.
+**Deliverable:** Workflow completes. SSM command log on each instance shows all 5 Docker steps succeeding.
 
 ---
 
 ## Part G — Health Validation
 
-### Task 12 — Automated Health Check via ALB
+### Task 13 — Automated Health Check via ALB
 
-After deployment, add a step that polls the `/health` endpoint **through the ALB**. This confirms the ALB successfully routes traffic to the new container.
+After deployment, poll `/health` through the ALB.
 
-> Note: After the container starts, the ALB health checker needs to run 2 successful checks (default interval: 30s each) before marking the target healthy and routing traffic. Expect up to 90 seconds before the first successful response.
+> **Timing note:** After the container restarts, the ALB runs its health checks. With the default 30-second interval and a threshold of 2 consecutive successes, it can take up to 90 seconds before the ALB routes traffic to the updated instance. Design your retry loop to wait at least 2 minutes.
 
 Requirements:
 - Poll `http://<ALB_DNS_NAME>/health`
-- Retry at least 12 times with 10-second intervals (gives the ALB ~2 minutes to become healthy)
-- Exit `0` on the first `200 OK`
+- Retry up to 18 times with 10-second intervals
+- Exit `0` on the first `200 OK` — print the live URL
 - Exit `1` if all attempts fail
-- On success, print the full ALB URL
 
-**Deliverable:** The pipeline log ends with:
+**Deliverable:** Pipeline ends with:
 
 ```
 Health check passed on attempt N
@@ -564,21 +544,19 @@ Application is live at: http://<alb-dns-name>.elb.amazonaws.com
 
 ### Bonus 1 — Real `/version` Endpoint
 
-Make `/version` return the actual commit SHA by passing it as a Docker build argument:
+Pass the commit SHA as a Docker build arg:
 
 ```bash
 docker build --build-arg COMMIT_SHA="${{ github.sha }}" ...
 ```
 
-The `Dockerfile` already accepts `ARG COMMIT_SHA=local` and sets `ENV COMMIT_SHA`. The route already reads `process.env.COMMIT_SHA`.
+The `Dockerfile` already accepts `ARG COMMIT_SHA=local`. The route already reads `process.env.COMMIT_SHA`.
 
-**Deliverable:** `GET /version` returns the real 40-character commit SHA.
+**Deliverable:** `GET /version` returns the real 40-character SHA.
 
 ---
 
 ### Bonus 2 — Parallel Jobs
-
-Add a `test` job that runs **in parallel with `lint`**. Both must succeed before `build-and-push` starts:
 
 ```
 lint ──┐
@@ -586,21 +564,19 @@ lint ──┐
 test ──┘
 ```
 
-Use `needs: [lint, test]` on the `build-and-push` job.
+Use `needs: [lint, test]` on `build-and-push`.
 
-**Deliverable:** The Actions tab shows `lint` and `test` running simultaneously.
+**Deliverable:** `lint` and `test` run simultaneously in the Actions tab.
 
 ---
 
 ### Bonus 3 — Build Metadata Artifact
 
-After pushing the image, save deployment metadata using `actions/upload-artifact@v4`.
-
-Create a file `build-info.json`:
+Save deployment metadata as a workflow artifact after the push step:
 
 ```json
 {
-  "image":        "<full ECR image URI with SHA tag>",
+  "image":        "<ECR image URI with SHA tag>",
   "commit":       "<github.sha>",
   "pushed_at":    "<ISO 8601 timestamp>",
   "workflow_run": "<github.run_number>",
@@ -608,7 +584,41 @@ Create a file `build-info.json`:
 }
 ```
 
-**Deliverable:** Workflow run contains a downloadable `build-info` artifact.
+Upload with `actions/upload-artifact@v4`.
+
+**Deliverable:** Downloadable `build-info` artifact on the workflow run.
+
+---
+
+### Bonus 4 — Self-Healing: Container on Fresh Instances
+
+Currently, if the ASG replaces a failed instance, the new EC2 runs the User Data script (Docker + AWS CLI installed), but has no container running until the next `git push`.
+
+Fix this by extending the User Data script to also pull and start the container on launch:
+
+```bash
+# After installing Docker and AWS CLI, add:
+REGION="us-east-1"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+IMAGE="${REGISTRY}/student-api:latest"
+
+aws ecr get-login-password --region $REGION \
+  | docker login --username AWS --password-stdin $REGISTRY
+
+docker pull $IMAGE
+docker run -d \
+  --name student-api \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  $IMAGE
+```
+
+Update the Launch Template with a new version that includes this script.
+
+> Note: this only works after the first pipeline run has pushed an image to ECR.
+
+**Deliverable:** Terminate the running instance manually. The ASG replaces it. The new instance becomes healthy in the target group without any pipeline run.
 
 ---
 
@@ -621,38 +631,41 @@ Developer Machine
         ▼
   GitHub Repository
         │
-        │  push event triggers workflow
+        │  push event
         ▼
   GitHub Actions Runner
         │
-        ├─── lint
+        ├── lint
         │
-        ├─── OIDC → AssumeRole → AWS   (no static credentials)
+        ├── OIDC → AssumeRole → AWS     (no static credentials)
         │              │
-        │              ├── docker build --build-arg COMMIT_SHA=...
+        │              ├── docker build --build-arg COMMIT_SHA
         │              ├── docker push :sha
-        │              └── docker push :latest  ──────────▶  ECR
+        │              └── docker push :latest  ───────▶  ECR
         │
-        ├─── aws ssm send-command
+        ├── aws ssm send-command
+        │         --targets tag:aws:autoscaling:groupName=student-api-asg
         │              │
-        │              ▼
-        │         EC2 Instance  (SSM Agent receives command, runs as root)
-        │              │
-        │              ├── aws ecr get-login-password | docker login
-        │              ├── docker pull  (new image from ECR)
-        │              ├── docker stop  (old container)
-        │              ├── docker rm    (old container)
-        │              └── docker run -p 3000:3000  (new container)
+        │     ┌────────┴─────────┐
+        │     ▼                  ▼
+        │  EC2 Instance A    EC2 Instance B     (SSM Agent, runs as root)
+        │     │                  │
+        │     ├── ecr login      ├── ecr login
+        │     ├── docker pull    ├── docker pull
+        │     ├── docker stop    ├── docker stop
+        │     ├── docker rm      ├── docker rm
+        │     └── docker run     └── docker run
+        │          :3000              :3000
         │
-        └─── health check loop
+        └── health check loop (retries every 10s, up to 3 min)
                     │
-                    │  HTTP GET /health (retries every 10s, up to 2 min)
+                    │  HTTP GET /health
                     ▼
         Application Load Balancer  (:80, alb-sg)
                     │
-                    │  forwards to :3000 (ec2-sg allows only from alb-sg)
-                    ▼
-               EC2 Docker Container  (Express API)
+                    │  round-robin to :3000 (ec2-sg: alb-sg only)
+                    ├──▶ EC2 A container
+                    └──▶ EC2 B container
 
 Final URL: http://<alb-dns-name>.us-east-1.elb.amazonaws.com
 ```
@@ -661,30 +674,32 @@ Final URL: http://<alb-dns-name>.us-east-1.elb.amazonaws.com
 
 ## Security Model
 
-| Component              | Reachable from internet | How                         |
-|------------------------|-------------------------|-----------------------------|
-| ALB port 80            | Yes                     | `alb-sg` allows `0.0.0.0/0` |
-| EC2 port 3000          | No                      | `ec2-sg` allows only `alb-sg` |
-| EC2 port 22 (SSH)      | No                      | No inbound rule, no key pair |
-| EC2 management         | Via SSM Session Manager | SSM Agent → outbound HTTPS to AWS |
-| GitHub → AWS auth      | Via OIDC               | No static keys stored anywhere |
+| Component              | Reachable from internet | How                                      |
+|------------------------|-------------------------|------------------------------------------|
+| ALB port 80            | Yes                     | `alb-sg` allows `0.0.0.0/0`             |
+| EC2 port 3000          | No                      | `ec2-sg` allows only `alb-sg`           |
+| EC2 port 22 (SSH)      | No                      | No inbound rule, no key pair             |
+| EC2 management         | Via SSM Session Manager | SSM Agent → outbound HTTPS to AWS        |
+| GitHub → AWS auth      | Via OIDC               | No static keys stored anywhere           |
+| New instances          | Auto-provisioned       | ASG + Launch Template + User Data        |
 
 ---
 
 ## Concepts Covered
 
-| Topic                      | What You Practiced                                                |
-|----------------------------|-------------------------------------------------------------------|
-| GitHub Actions             | Multi-job CI/CD pipeline with job dependencies                    |
-| OIDC                       | Passwordless AWS authentication — no keys in GitHub              |
-| IAM Trust Policy           | Scoping which repository and branch can assume the role           |
-| Docker                     | Build, tag with two strategies, and push to a registry            |
-| ECR                        | AWS-managed private Docker registry                               |
-| EC2                        | Running a container on a real Linux server                        |
-| Security Groups            | Network-layer isolation — ALB accepts internet, EC2 accepts ALB  |
-| Application Load Balancer  | DNS-named entry point with built-in health awareness             |
-| Target Groups              | Mapping ALB listener to container port 3000                       |
-| Systems Manager            | Remote command execution and interactive sessions — no SSH        |
-| AWS CLI on EC2             | ECR login from inside the instance using IAM role credentials    |
-| Health Checks              | Pipeline waits for ALB to confirm the deployment is live          |
-| Image Tagging              | `latest` for convenience, SHA tag for immutable traceability      |
+| Topic                      | What You Practiced                                                      |
+|----------------------------|-------------------------------------------------------------------------|
+| GitHub Actions             | Multi-job CI/CD pipeline with job outputs and dependencies              |
+| OIDC                       | Passwordless AWS authentication from GitHub — no keys anywhere          |
+| IAM Trust Policy           | Scoping which repository can assume the role                            |
+| Docker                     | Build, tag (immutable SHA + mutable latest), push to registry          |
+| ECR                        | AWS-managed private Docker registry                                     |
+| Launch Template            | Infrastructure-as-code for EC2 configuration                           |
+| User Data                  | Automatic bootstrapping of Docker + AWS CLI on every new instance      |
+| Auto Scaling Group         | Self-healing fleet — replaces unhealthy instances automatically        |
+| Security Groups            | ALB accepts internet, EC2 accepts only ALB                             |
+| Application Load Balancer  | DNS-named entry point, health-aware traffic distribution               |
+| Target Groups              | ALB routing to container port 3000 across all instances                |
+| Systems Manager            | Remote command execution without SSH — targeting by ASG tag            |
+| Health Checks              | Pipeline confirms the ALB routes to the updated container              |
+| Image Tagging              | SHA tag for traceability, `latest` for self-healing bootstrapping      |
