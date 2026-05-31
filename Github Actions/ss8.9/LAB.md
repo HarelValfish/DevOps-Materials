@@ -69,11 +69,13 @@ express-api/
 **Create a new standalone GitHub repo for this lab.** Copy the contents of `express-api/` (not the folder itself) into the root of that repo. The workflows treat the repo root as the working directory — all source files, `package.json`, and `Dockerfile` live at root level, not inside a subdirectory.
 
 ```bash
-gh repo create <your-username>/student-api --private
-cd /path/to/new/student-api-repo
+# Create the repo and push the app code
+gh repo create <your-username>/student-api --private --clone
+cd student-api
 cp -r /path/to/express-api/. .
 mkdir -p .github/workflows
-# copy solution workflows into .github/workflows/
+cp /path/to/solution/.github/workflows/ci.yml .github/workflows/
+cp /path/to/solution/.github/workflows/deploy.yml .github/workflows/
 git add . && git commit -m "feat: initial student-api" && git push
 ```
 
@@ -121,11 +123,16 @@ Your image name will be: `<your-username>/student-api`
 
 ### Task 2 — Create a Docker Hub access token
 
-1. Docker Hub → avatar → **Account Settings** → **Security** → **New Access Token**.
+1. Docker Hub → avatar → **Account Settings** → **Personal access tokens** → **Generate new token**.
 2. Description: `student-api-deploy`, Permissions: **Read, Write, Delete**.
-3. Copy the token.
+3. Copy the token immediately — it won't be shown again.
 
-Add both as GitHub secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
+Add both as GitHub secrets:
+
+```bash
+gh secret set DOCKERHUB_USERNAME --repo <your-username>/student-api
+gh secret set DOCKERHUB_TOKEN --repo <your-username>/student-api
+```
 
 ---
 
@@ -137,71 +144,141 @@ Add both as GitHub secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 2. Create a **free (M0) cluster** — any region, any provider.
 3. **Database Access** → Add a database user (username + password).
 4. **Network Access** → Add IP Address → **0.0.0.0/0** (allow anywhere — EC2 IPs are dynamic).
-5. **Clusters** → **Connect** → **Drivers** → Copy the connection string:
+5. **Clusters** → **Connect** → **Drivers** → Copy the connection string.  
+   Make sure the database name `student-api` is in the path:
    ```
    mongodb+srv://<user>:<password>@<cluster>.mongodb.net/student-api?retryWrites=true&w=majority
    ```
 
-Add it as GitHub secret `MONGODB_URI`.
+Add it as GitHub secret `MONGODB_URI`:
 
-> **How this flows at deploy time:**  
-> 1. The deploy workflow syncs `MONGODB_URI` to AWS SSM Parameter Store (encrypted).  
-> 2. Each EC2 instance reads it from SSM Parameter Store at deploy time using its IAM role.  
-> 3. The Docker container receives it as an environment variable.  
+```bash
+gh secret set MONGODB_URI --repo <your-username>/student-api
+```
+
+> **How this flows at deploy time:**
+> 1. The deploy workflow syncs `MONGODB_URI` to AWS SSM Parameter Store (encrypted).
+> 2. Each EC2 instance reads it from SSM Parameter Store at deploy time using its IAM role.
+> 3. The Docker container receives it as an environment variable.
 > No MongoDB credentials are baked into your Docker image or EC2 instance.
 
 ---
 
 ## Part C — AWS Infrastructure
 
+> All CLI commands below use `us-east-1`. If you use a different region, replace it everywhere.
+
+### Get your VPC and subnet IDs first
+
+Every resource below lives in the same VPC. Run this once and keep the output:
+
+```bash
+# Default VPC ID
+VPC_ID=$(aws ec2 describe-vpcs \
+  --filters "Name=isDefault,Values=true" \
+  --query "Vpcs[0].VpcId" --output text)
+echo "VPC_ID=$VPC_ID"
+
+# Default public subnets (need at least 2 AZs for ALB)
+aws ec2 describe-subnets \
+  --filters "Name=vpc-id,Values=$VPC_ID" "Name=default-for-az,Values=true" \
+  --query "Subnets[].[SubnetId,AvailabilityZone]" \
+  --output table
+```
+
+Pick at least 2 subnet IDs from different AZs. You'll use them in Tasks 9 and 10.
+
+---
+
 ### Task 4 — Security Groups
 
-Create two security groups in the same VPC.
+**Create `alb-sg` (for the Load Balancer):**
 
-**`alb-sg` — for the Application Load Balancer:**
+```bash
+ALB_SG=$(aws ec2 create-security-group \
+  --group-name alb-sg \
+  --description "ALB security group for student-api" \
+  --vpc-id $VPC_ID \
+  --query "GroupId" --output text)
+echo "ALB_SG=$ALB_SG"
 
-| Rule | Type | Protocol | Port | Source |
-|------|------|----------|------|--------|
-| Inbound | HTTP | TCP | 80 | 0.0.0.0/0 |
-| Outbound | All traffic | All | All | 0.0.0.0/0 |
+# Allow HTTP from anywhere
+aws ec2 authorize-security-group-ingress \
+  --group-id $ALB_SG \
+  --protocol tcp --port 80 --cidr 0.0.0.0/0
+```
 
-**`ec2-sg` — for EC2 instances:**
+**Create `ec2-sg` (for EC2 instances):**
 
-| Rule | Type | Protocol | Port | Source |
-|------|------|----------|------|--------|
-| Inbound | Custom TCP | TCP | 3000 | `alb-sg` (security group ID) |
-| Outbound | All traffic | All | All | 0.0.0.0/0 |
+```bash
+EC2_SG=$(aws ec2 create-security-group \
+  --group-name ec2-sg \
+  --description "EC2 security group for student-api" \
+  --vpc-id $VPC_ID \
+  --query "GroupId" --output text)
+echo "EC2_SG=$EC2_SG"
 
-> No port 22. No port 80 on EC2. Port 3000 is only reachable from the ALB. The outbound `All traffic` rule allows the SSM Agent to call AWS endpoints and Docker to pull from Docker Hub and connect to Atlas.
+# Allow port 3000 ONLY from the ALB security group
+aws ec2 authorize-security-group-ingress \
+  --group-id $EC2_SG \
+  --protocol tcp --port 3000 \
+  --source-group $ALB_SG
+```
+
+> No port 22. No port 80 on EC2. Port 3000 is only reachable from the ALB. The default outbound `All traffic` rule allows SSM Agent to call AWS endpoints and Docker to pull images.
+
+**Verify:**
+```bash
+aws ec2 describe-security-groups \
+  --group-ids $ALB_SG $EC2_SG \
+  --query "SecurityGroups[].[GroupName,IpPermissions[*].[IpProtocol,FromPort,IpRanges[*].CidrIp,UserIdGroupPairs[*].GroupId]]" \
+  --output table
+```
+
+---
 
 ### Task 5 — EC2 IAM Role
 
-Create an IAM role for EC2 instances.
+**Create the role:**
 
-- Trusted entity: **AWS service → EC2**
-- Role name: `student-api-ec2-role`
+```bash
+aws iam create-role \
+  --role-name student-api-ec2-role \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"Service": "ec2.amazonaws.com"},
+      "Action": "sts:AssumeRole"
+    }]
+  }'
+```
 
-**Attached managed policy:**
-- `AmazonSSMManagedInstanceCore`
+**Attach SSM managed policy (allows SSM Agent to function):**
 
-**Inline policy** (name: `StudentApiParameterStoreRead`):
+```bash
+aws iam attach-role-policy \
+  --role-name student-api-ec2-role \
+  --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+```
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
+**Add inline policy to read SSM Parameter Store secrets:**
+
+```bash
+aws iam put-role-policy \
+  --role-name student-api-ec2-role \
+  --policy-name StudentApiParameterStoreRead \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
       "Effect": "Allow",
       "Action": ["ssm:GetParameter", "ssm:GetParameters"],
       "Resource": "arn:aws:ssm:*:*:parameter/student-api/*"
-    }
-  ]
-}
+    }]
+  }'
 ```
 
-This grants access to ALL three secrets (`dockerhub/username`, `dockerhub/token`, `mongodb/uri`) with a single rule.
-
-**Create the instance profile** (EC2 requires a profile wrapper around the role — this is separate from the role itself):
+**Create the instance profile** (EC2 requires a profile wrapper around the role — the console creates this automatically; the CLI requires it manually):
 
 ```bash
 aws iam create-instance-profile \
@@ -212,11 +289,13 @@ aws iam add-role-to-instance-profile \
   --role-name student-api-ec2-role
 ```
 
-> If you create the role in the console it creates the profile automatically. Via CLI you must do both steps manually.
+Wait ~10 seconds for IAM to propagate before continuing.
+
+---
 
 ### Task 6 — Store Docker Hub credentials in SSM Parameter Store
 
-> **Note:** The MongoDB URI is synced automatically by the deploy pipeline. You only need to put the Docker Hub credentials manually once.
+> The MongoDB URI is synced automatically by the deploy pipeline. Store Docker Hub credentials once manually.
 
 ```bash
 aws ssm put-parameter \
@@ -236,18 +315,35 @@ aws ssm put-parameter \
 
 The pipeline will create `/student-api/mongodb/uri` automatically on first deploy.
 
+**Verify:**
+```bash
+aws ssm get-parameter --name /student-api/dockerhub/username --query "Parameter.Value" --output text
+aws ssm get-parameter --name /student-api/dockerhub/token --with-decryption --query "Parameter.Value" --output text
+```
+
+---
+
 ### Task 7 — Launch Template
 
-- Name: `student-api-lt`
-- AMI: **Ubuntu Server 22.04 LTS** (64-bit x86)
-- Instance type: `t3.micro`
-- IAM instance profile: `student-api-ec2-role`
-- Security groups: `ec2-sg`
-- Key pair: **None** (no SSH)
-
-**User Data:**
+Get the latest Ubuntu 22.04 LTS AMI:
 
 ```bash
+AMI=$(aws ec2 describe-images \
+  --owners 099720109477 \
+  --filters \
+    "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" \
+    "Name=state,Values=available" \
+  --query "sort_by(Images, &CreationDate)[-1].ImageId" \
+  --output text)
+echo "AMI=$AMI"
+```
+
+Create the launch template with user data that:
+1. Installs Docker and AWS CLI v2
+2. Auto-starts the app on launch (self-heal — new instances bootstrap without a pipeline run)
+
+```bash
+USER_DATA=$(base64 <<'USERDATA'
 #!/bin/bash
 set -e
 
@@ -263,36 +359,119 @@ curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
 unzip -q /tmp/awscliv2.zip -d /tmp
 /tmp/aws/install
 rm -rf /tmp/aws /tmp/awscliv2.zip
+
+# Self-heal: pull and run latest image when this instance launches
+REGION="us-east-1"
+DH_USER=$(aws ssm get-parameter --region "$REGION" \
+  --name /student-api/dockerhub/username --query Parameter.Value --output text)
+DH_TOKEN=$(aws ssm get-parameter --region "$REGION" \
+  --name /student-api/dockerhub/token --with-decryption --query Parameter.Value --output text)
+MONGO_URI=$(aws ssm get-parameter --region "$REGION" \
+  --name /student-api/mongodb/uri --with-decryption --query Parameter.Value \
+  --output text 2>/dev/null || echo "")
+
+echo "$DH_TOKEN" | docker login --username "$DH_USER" --password-stdin
+
+if [ -n "$MONGO_URI" ]; then
+  docker run -d --name student-api --restart unless-stopped \
+    -p 3000:3000 \
+    -e MONGODB_URI="$MONGO_URI" \
+    "$DH_USER/student-api:latest" || true
+fi
+USERDATA
+)
+
+aws ec2 create-launch-template \
+  --launch-template-name student-api-lt \
+  --version-description "v1" \
+  --launch-template-data "{
+    \"ImageId\": \"$AMI\",
+    \"InstanceType\": \"t3.micro\",
+    \"IamInstanceProfile\": {\"Name\": \"student-api-ec2-role\"},
+    \"SecurityGroupIds\": [\"$EC2_SG\"],
+    \"UserData\": \"$USER_DATA\"
+  }"
 ```
+
+> The self-heal block runs at launch. If `/student-api/mongodb/uri` doesn't exist yet (before first deploy), it skips `docker run` gracefully. After the first pipeline push, all future replacement instances start automatically without any human intervention.
+
+---
 
 ### Task 8 — Target Group
 
-- Type: **Instances**
-- Name: `student-api-tg`
-- Protocol: **HTTP**, Port: **3000**
-- Health check path: `/health`
-- Health check interval: 30 seconds
-- Healthy threshold: 2
+```bash
+TG_ARN=$(aws elbv2 create-target-group \
+  --name student-api-tg \
+  --protocol HTTP \
+  --port 3000 \
+  --vpc-id $VPC_ID \
+  --health-check-path /health \
+  --health-check-interval-seconds 30 \
+  --healthy-threshold-count 2 \
+  --unhealthy-threshold-count 3 \
+  --target-type instance \
+  --query "TargetGroups[0].TargetGroupArn" --output text)
+echo "TG_ARN=$TG_ARN"
+```
+
+---
 
 ### Task 9 — Application Load Balancer
 
-- Name: `student-api-alb`
-- Scheme: **Internet-facing**
-- Subnets: at least 2 public subnets in different AZs
-- Security groups: `alb-sg`
-- Listener: HTTP :80 → forward to `student-api-tg`
+Replace `subnet-xxx` and `subnet-yyy` with at least 2 public subnet IDs from different AZs (from the query you ran earlier):
 
-Copy the **DNS name** and add it as GitHub secret `ALB_DNS_NAME`.
+```bash
+ALB_ARN=$(aws elbv2 create-load-balancer \
+  --name student-api-alb \
+  --subnets subnet-xxx subnet-yyy \
+  --security-groups $ALB_SG \
+  --scheme internet-facing \
+  --type application \
+  --query "LoadBalancers[0].LoadBalancerArn" --output text)
+echo "ALB_ARN=$ALB_ARN"
+
+# Get the DNS name — this becomes the ALB_DNS_NAME secret
+ALB_DNS=$(aws elbv2 describe-load-balancers \
+  --load-balancer-arns $ALB_ARN \
+  --query "LoadBalancers[0].DNSName" --output text)
+echo "ALB_DNS=$ALB_DNS"
+
+# Add listener: HTTP :80 → target group
+aws elbv2 create-listener \
+  --load-balancer-arn $ALB_ARN \
+  --protocol HTTP --port 80 \
+  --default-actions Type=forward,TargetGroupArn=$TG_ARN
+```
+
+Add the DNS name as a GitHub secret:
+
+```bash
+gh secret set ALB_DNS_NAME --repo <your-username>/student-api --body "$ALB_DNS"
+```
+
+---
 
 ### Task 10 — Auto Scaling Group
 
-- Name: `student-api-asg`
-- Launch template: `student-api-lt`
-- Subnets: same as ALB (at least 2 AZs)
-- Load balancing: attach to `student-api-tg`
-- Health check type: **ELB**
-- Health check grace period: 120 seconds
-- Desired: 1, Minimum: 1, Maximum: 2
+Use the same subnet IDs as the ALB:
+
+```bash
+aws autoscaling create-auto-scaling-group \
+  --auto-scaling-group-name student-api-asg \
+  --launch-template "LaunchTemplateName=student-api-lt,Version=\$Latest" \
+  --min-size 1 \
+  --max-size 2 \
+  --desired-capacity 1 \
+  --vpc-zone-identifier "subnet-xxx,subnet-yyy" \
+  --target-group-arns $TG_ARN \
+  --health-check-type ELB \
+  --health-check-grace-period 120 \
+  --tags "Key=Name,Value=student-api,PropagateAtLaunch=true"
+
+gh secret set ASG_NAME --repo <your-username>/student-api --body "student-api-asg"
+```
+
+> **Health check grace period = 120 seconds.** This gives the instance time to install Docker, pull the image, and start the container before ELB health checks can terminate it.
 
 ---
 
@@ -300,78 +479,115 @@ Copy the **DNS name** and add it as GitHub secret `ALB_DNS_NAME`.
 
 ### Task 11 — OIDC Provider and IAM Role
 
-**Step 1 — Add GitHub OIDC identity provider:**
+**Step 1 — Add GitHub OIDC identity provider** (skip if it already exists in your account):
 
-IAM → Identity providers → Add provider
-- Type: **OpenID Connect**
-- URL: `https://token.actions.githubusercontent.com`
-- Audience: `sts.amazonaws.com`
+```bash
+# Check if it already exists
+aws iam list-open-id-connect-providers \
+  --query "OpenIDConnectProviderList[*].Arn" --output text
 
-**Step 2 — Create IAM role:**
+# If not listed, create it
+aws iam create-open-id-connect-provider \
+  --url https://token.actions.githubusercontent.com \
+  --client-id-list sts.amazonaws.com \
+  --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
+```
 
-- Trusted entity: **Web identity** → `token.actions.githubusercontent.com`
-- Role name: `student-api-github-actions-role`
+> The thumbprint `6938fd4d98bab03faadb97b34396831e3780aea1` is GitHub's well-known value. AWS now validates the OIDC provider by audience, not thumbprint, so this value is accepted regardless.
 
-**Step 3 — Edit trust policy** (restrict to your repo):
+**Step 2 — Get your account ID:**
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+echo "ACCOUNT_ID=$ACCOUNT_ID"
+```
+
+**Step 3 — Create the IAM role** (replace `<GITHUB_USERNAME>` with your GitHub username):
+
+```bash
+aws iam create-role \
+  --role-name student-api-github-actions-role \
+  --assume-role-policy-document "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [{
+      \"Effect\": \"Allow\",
+      \"Principal\": {
+        \"Federated\": \"arn:aws:iam::$ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com\"
       },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+      \"Action\": \"sts:AssumeRoleWithWebIdentity\",
+      \"Condition\": {
+        \"StringEquals\": {
+          \"token.actions.githubusercontent.com:aud\": \"sts.amazonaws.com\"
         },
-        "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:<GITHUB_ORG>/<REPO>:*"
+        \"StringLike\": {
+          \"token.actions.githubusercontent.com:sub\": \"repo:<GITHUB_USERNAME>/student-api:*\"
         }
       }
-    }
-  ]
-}
+    }]
+  }"
 ```
 
-**Step 4 — Attach inline permissions policy:**
+**Step 4 — Attach permissions policy:**
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "SSMDeploy",
-      "Effect": "Allow",
-      "Action": [
-        "ssm:SendCommand",
-        "ssm:GetCommandInvocation",
-        "ssm:ListCommandInvocations"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "SSMConfig",
-      "Effect": "Allow",
-      "Action": "ssm:PutParameter",
-      "Resource": "arn:aws:ssm:*:*:parameter/student-api/*"
-    },
-    {
-      "Sid": "ASGDescribe",
-      "Effect": "Allow",
-      "Action": "autoscaling:DescribeAutoScalingGroups",
-      "Resource": "*"
-    }
-  ]
-}
+```bash
+aws iam put-role-policy \
+  --role-name student-api-github-actions-role \
+  --policy-name StudentApiDeployPolicy \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "SSMDeploy",
+        "Effect": "Allow",
+        "Action": [
+          "ssm:SendCommand",
+          "ssm:GetCommandInvocation",
+          "ssm:ListCommandInvocations"
+        ],
+        "Resource": "*"
+      },
+      {
+        "Sid": "SSMConfig",
+        "Effect": "Allow",
+        "Action": "ssm:PutParameter",
+        "Resource": "arn:aws:ssm:*:*:parameter/student-api/*"
+      },
+      {
+        "Sid": "ASGDescribe",
+        "Effect": "Allow",
+        "Action": "autoscaling:DescribeAutoScalingGroups",
+        "Resource": "*"
+      }
+    ]
+  }'
 ```
 
-> `SSMConfig` allows the deploy pipeline to sync secrets (`MONGODB_URI`) from GitHub to SSM Parameter Store on every deployment — GitOps for secrets.
+**Step 5 — Get the Role ARN and add as GitHub secret:**
 
-**Step 5 — Copy the Role ARN** and add as GitHub secret `AWS_ROLE_ARN`.
+```bash
+ROLE_ARN=$(aws iam get-role \
+  --role-name student-api-github-actions-role \
+  --query "Role.Arn" --output text)
+echo "ROLE_ARN=$ROLE_ARN"
+
+gh secret set AWS_ROLE_ARN --repo <your-username>/student-api --body "$ROLE_ARN"
+```
+
+**Verify all 6 secrets are set:**
+
+```bash
+gh secret list --repo <your-username>/student-api
+```
+
+Expected output:
+```
+ALB_DNS_NAME      ...
+ASG_NAME          ...
+AWS_ROLE_ARN      ...
+DOCKERHUB_TOKEN   ...
+DOCKERHUB_USERNAME ...
+MONGODB_URI       ...
+```
 
 ---
 
@@ -398,9 +614,9 @@ curl -X POST http://localhost:3000/items \
 curl http://localhost:3000/items
 ```
 
-Run tests (tests use a `MONGODB_URI` provided via env):
+Run tests (needs a MongoDB):
 ```bash
-# Needs a MongoDB — you can spin one up with Docker:
+# Spin up a local MongoDB with Docker:
 docker run -d --name test-mongo -p 27017:27017 mongo:7
 
 MONGODB_URI="mongodb://localhost:27017/test" npm test
@@ -430,6 +646,8 @@ services:
 Tests connect to `mongodb://localhost:27017/student-api-test` — fully isolated, no Atlas account needed for CI.
 
 See `solution/.github/workflows/ci.yml` for the complete file.
+
+> **Why do both `ci.yml` and `deploy.yml` run on push to `main`?** This is intentional. `ci.yml` covers both PRs and main pushes for fast feedback. `deploy.yml` runs only on main pushes and does the actual deployment. On a push to main, both run in parallel and lint/test are duplicated — this is acceptable overhead. In production you would typically skip the CI workflow on main or merge them.
 
 ---
 
@@ -468,25 +686,6 @@ The `build-and-push` job:
 
 This is **GitOps for secrets** — the deploy pipeline is the source of truth for secrets, keeping GitHub and AWS in sync automatically.
 
-**SSM deploy script** (runs on each EC2 instance via Run Command):
-
-```bash
-# Instance reads all credentials from SSM Parameter Store using its IAM role
-DH_USER=$(aws ssm get-parameter --name /student-api/dockerhub/username ...)
-DH_TOKEN=$(aws ssm get-parameter --name /student-api/dockerhub/token --with-decryption ...)
-MONGO_URI=$(aws ssm get-parameter --name /student-api/mongodb/uri --with-decryption ...)
-
-# Authenticate, pull, replace container
-echo "$DH_TOKEN" | docker login --username "$DH_USER" --password-stdin
-docker pull <image>
-docker stop student-api && docker rm student-api
-docker run -d --name student-api --restart unless-stopped \
-  -p 3000:3000 \
-  -e COMMIT_SHA=<sha> \
-  -e MONGODB_URI="$MONGO_URI" \
-  <image>
-```
-
 **First deploy on a fresh instance — timing note:**
 
 When the ASG launches a new EC2 instance, the user data script takes 3–5 minutes to install Docker and AWS CLI. SSM Agent is pre-installed on Ubuntu 22.04 and starts immediately, so it can receive Run Commands before user data finishes. To prevent the deploy script from failing with `aws: not found`, add wait loops at the top of the SSM command script:
@@ -500,12 +699,26 @@ for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; echo "Waiting for
 
 **SSM race condition — always capture instance IDs before `send-command`:**
 
-The `wait` step must poll the same instances the command was sent to. If you query ASG InService instances separately (after sending the command), the ASG may have rotated an instance between the two calls, causing `InvocationDoesNotExist`. Capture IDs once, use the same list for both:
+The wait step must poll the same instances the command was sent to. If you query ASG InService instances separately (after sending the command), the ASG may have rotated an instance between the two calls, causing `InvocationDoesNotExist`. Capture IDs once, use the same list for both:
 
 ```bash
 INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups ...)
 aws ssm send-command --instance-ids $INSTANCE_IDS ...
-# then wait using the same $INSTANCE_IDS
+# then poll using the same $INSTANCE_IDS
+```
+
+**`aws ssm wait command-executed` times out after 100 seconds.** On a fresh instance, the deploy script waits for user data (3-5 min) before it can run. Use a manual polling loop instead:
+
+```bash
+for attempt in $(seq 1 60); do
+  STATUS=$(aws ssm get-command-invocation \
+    --command-id "$COMMAND_ID" \
+    --instance-id "$INSTANCE_ID" \
+    --query "Status" --output text 2>/dev/null || echo "Pending")
+  [ "$STATUS" = "Success" ] && break
+  [ "$STATUS" = "Failed" ] && exit 1
+  sleep 10
+done
 ```
 
 **Trigger a full pipeline run:**
@@ -515,8 +728,6 @@ Push a commit to `main`. Watch all jobs run:
 ```
 lint → test → build-and-push → deploy
 ```
-
-> **Why do both `ci.yml` and `deploy.yml` run on push to `main`?** This is intentional. `ci.yml` runs on both push and pull_request — it's the fast feedback loop for PRs. `deploy.yml` runs on push to main only — it's the deployment gate. On a main push, both run in parallel; lint and test run twice. This is acceptable overhead for the lab. In production you'd typically skip the CI workflow on main or combine them.
 
 Once you see:
 ```
@@ -540,6 +751,7 @@ curl http://<ALB_DNS_NAME>/version
 
 ## Verification Checklist
 
+- [ ] `gh secret list` shows all 6 secrets
 - [ ] Docker Hub shows `<username>/student-api` with `:<sha>` and `:latest` tags
 - [ ] ALB DNS responds on port 80 (not 3000)
 - [ ] `GET /health` returns `{"status":"ok","db":"connected",...}`
@@ -592,31 +804,6 @@ The `items` count requires a Mongoose query inside the health handler. Consider 
       -H 'Content-type: application/json' \
       --data "{\"text\":\"Deployed \`${{ github.sha }}\` to http://${{ secrets.ALB_DNS_NAME }} :rocket:\"}"
 ```
-
-### Bonus 4 — Self-healing: new ASG instances bootstrap themselves
-
-Extend the Launch Template User Data so a replacement instance (launched after a health check failure) starts the application without a pipeline run:
-
-```bash
-# After installing Docker + AWS CLI, add:
-REGION="us-east-1"
-DH_USER=$(aws ssm get-parameter --region "$REGION" \
-  --name /student-api/dockerhub/username --query Parameter.Value --output text)
-DH_TOKEN=$(aws ssm get-parameter --region "$REGION" \
-  --name /student-api/dockerhub/token --with-decryption --query Parameter.Value --output text)
-MONGO_URI=$(aws ssm get-parameter --region "$REGION" \
-  --name /student-api/mongodb/uri --with-decryption --query Parameter.Value --output text)
-
-echo "$DH_TOKEN" | docker login --username "$DH_USER" --password-stdin
-
-docker run -d --name student-api \
-  --restart unless-stopped \
-  -p 3000:3000 \
-  -e MONGODB_URI="$MONGO_URI" \
-  "$DH_USER/student-api:latest"
-```
-
-> When the ASG launches a replacement instance, this User Data script fetches all credentials from SSM Parameter Store and starts the last-pushed image automatically — production state is restored without any human intervention.
 
 ---
 
