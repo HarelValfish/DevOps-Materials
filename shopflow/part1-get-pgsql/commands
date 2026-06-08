@@ -1,0 +1,1 @@
+docker run -d --name postgres-db --network postgres-network -e POSTGRES_USER=admin -e POSTGRES_PASSWORD=admin123 -e POSTGRES_DB=company -v postgres-data:/var/lib/postgresql/data -p 5432:5432 postgres:17

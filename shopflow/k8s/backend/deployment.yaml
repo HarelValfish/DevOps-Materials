@@ -15,8 +15,8 @@ spec:
     spec:
       containers:
         - name: backend
-          image: shopflow-backend:latest
-          imagePullPolicy: Never
+          image: lironefitoussi/shopflow-backend:17322a3
+          imagePullPolicy: Always
           ports:
             - containerPort: 3000
           env:
@@ -34,8 +34,6 @@ spec:
               value: shopuser
             - name: DB_PASSWORD
               value: shoppass
-            - name: REDIS_HOST
-              value: redis-service
           livenessProbe:
             httpGet:
               path: /health

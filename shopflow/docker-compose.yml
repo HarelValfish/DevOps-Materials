@@ -6,7 +6,6 @@ networks:
 
 volumes:
   postgres-data:
-  redis-data:
 
 services:
   postgres:
@@ -26,20 +25,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    container_name: shopflow-redis
-    networks: [backend-net]
-    volumes:
-      - redis-data:/data
-    command: redis-server --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
   backend:
     build:
       context: ./backend
@@ -54,11 +39,8 @@ services:
       DB_NAME: shopflow
       DB_USER: shopuser
       DB_PASSWORD: shoppass
-      REDIS_HOST: redis
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]

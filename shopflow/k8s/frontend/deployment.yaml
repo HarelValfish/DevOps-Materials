@@ -15,8 +15,8 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: shopflow-frontend:latest
-          imagePullPolicy: Never
+          image: lironefitoussi/shopflow-frontend:17322a3
+          imagePullPolicy: Always
           ports:
             - containerPort: 80
           livenessProbe:

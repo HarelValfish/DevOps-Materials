@@ -250,12 +250,11 @@
 
 <header>
   <div class="logo">Shop<span>Flow</span></div>
-  <div id="source-badge">⏳ טוען...</div>
 </header>
 
 <main>
   <h1 class="page-title">המוצרים שלנו</h1>
-  <p class="page-subtitle">לחץ על BUY NOW כדי לעדכן מלאי ולבדוק cache invalidation</p>
+  <p class="page-subtitle">לחץ על BUY NOW כדי לעדכן מלאי</p>
 
   <div id="error-banner">
     <h2>Backend לא מגיב</h2>
@@ -277,20 +276,6 @@
     el.textContent = msg;
     document.getElementById('toast-container').appendChild(el);
     setTimeout(() => el.remove(), 3100);
-  }
-
-  function setBadge(source) {
-    const badge = document.getElementById('source-badge');
-    if (source === 'cache') {
-      badge.textContent = '⚡ REDIS CACHE';
-      badge.className = 'cache';
-    } else if (source === 'db') {
-      badge.textContent = '🗄 POSTGRES';
-      badge.className = 'db';
-    } else {
-      badge.textContent = '⏳ טוען...';
-      badge.className = '';
-    }
   }
 
   function renderSkeletons() {
@@ -328,18 +313,15 @@
   async function loadProducts() {
     document.getElementById('error-banner').style.display = 'none';
     renderSkeletons();
-    setBadge('loading');
 
     try {
       const res = await fetch('/api/products');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const { source, data } = await res.json();
-      setBadge(source);
+      const data = await res.json();
       renderProducts(data);
     } catch (err) {
       document.getElementById('grid').innerHTML = '';
       document.getElementById('error-banner').style.display = 'block';
-      setBadge('error');
       showToast('שגיאה: לא ניתן לטעון מוצרים', 'error');
     }
   }

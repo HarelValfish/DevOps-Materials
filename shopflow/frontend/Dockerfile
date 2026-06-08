@@ -3,7 +3,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-RUN mkdir -p /app/dist && cp -r src/* /app/dist/
+RUN npm run build
 
 FROM nginx:1.25-alpine AS production
 RUN rm /etc/nginx/conf.d/default.conf
