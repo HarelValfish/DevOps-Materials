@@ -1,17 +1,21 @@
-# Step 2 — Containerize each service
+# Step 02 — Containerize each service
 
 **Goal:** write a `Dockerfile` for `inventory-service` and another for
-`orders-service` so each can run as a container.
+`orders-service` **yourself**, build an image for each, and smoke-test that they
+run.
 
-No Dockerfile is provided — this is part of the exercise. Create
-`inventory-service/Dockerfile` and `orders-service/Dockerfile` yourself.
+No `Dockerfile` is provided — this is the exercise. You create
+`inventory-service/Dockerfile` and `orders-service/Dockerfile`. Both services
+are the same shape, so the two files will look nearly identical.
+
+> **Set up:** each `Dockerfile` goes **inside its service folder**, next to that
+> service's `requirements.txt` and `app.py`, and you build from there.
 
 ---
 
-## Requirements for each Dockerfile
+## A. Requirements for each Dockerfile
 
-Both services are the same shape, so the two Dockerfiles will look nearly
-identical. Each must:
+Each `Dockerfile` must:
 
 - [ ] Start `FROM python:3.12-slim` (match the version you used locally)
 - [ ] Set a working directory inside the image (e.g. `/app`)
@@ -20,16 +24,28 @@ identical. Each must:
       code changes
 - [ ] Install with `--no-cache-dir` to keep the image small
 - [ ] `EXPOSE 8080`
-- [ ] Start the app with **gunicorn**, not the Flask dev server:
-      `gunicorn --bind 0.0.0.0:8080 app:app`
+- [ ] Start the app with **gunicorn**, not the Flask dev server
+
+**The one fixed piece — how to start the app.** Inside the container the app is
+launched with gunicorn:
+
+```
+gunicorn --bind 0.0.0.0:8080 app:app
+```
 
 > `gunicorn` is already in both `requirements.txt`. The Flask dev server
 > (`python app.py`) is fine for local poking but must never serve in a
 > container that ships to ECS.
 
+*Self-check questions:*
+- Why copy `requirements.txt` and install **before** `COPY app.py`? (What does
+  it do to rebuild times when you change only source code?)
+- Why does `--no-cache-dir` make the image smaller?
+- Why gunicorn instead of the Flask dev server in a shipped container?
+
 ---
 
-## Why copy `requirements.txt` before `app.py`?
+## B. Why copy `requirements.txt` before `app.py`?
 
 Docker caches each layer. If you copy everything at once, any change to
 `app.py` busts the `pip install` layer and re-downloads every dependency. By
@@ -38,7 +54,7 @@ layer is reused on every build where the dependencies didn't change.
 
 ---
 
-## Build and smoke-test each image
+## C. Build and smoke-test each image
 
 ```bash
 docker build -t inventory-service ./inventory-service
@@ -49,13 +65,19 @@ docker stop $(docker ps -q --filter ancestor=inventory-service)
 ```
 
 Do the same for `orders-service` (its `/orders` route will 503 on its own —
-it has no inventory to call yet; that's expected until [Step 3](03-compose-local.md)).
+it has no inventory to call yet; that's expected until [Step 03](03-compose-local.md)).
 
 ```bash
 docker build -t orders-service ./orders-service
 ```
 
 ---
+
+## What you learned
+
+- A `Dockerfile` is an ordered set of instructions; ordering deps before code
+  gives fast, cached rebuilds. Running a real WSGI server (gunicorn) instead of
+  the dev server is the difference between a toy and something you'd ship.
 
 ## Checklist
 
@@ -64,7 +86,6 @@ docker build -t orders-service ./orders-service
 - [ ] Running the inventory image responds on `/health` and `/stock/widget`
 - [ ] Both images run **gunicorn**, not the Flask dev server
 
-Stuck? `solution/inventory-service/Dockerfile` is the reference — try writing
-yours first.
+## Next
 
-Next: [Step 3 — Run both locally with Compose](03-compose-local.md).
+→ [Step 03 — Run both locally with Compose](03-compose-local.md)

@@ -1,15 +1,15 @@
-# Step 1 — Local development setup
+# Step 01 — Local development setup
 
 **Goal:** get both services' dependencies installed in isolated virtual
 environments and confirm every test passes — before you touch Docker or AWS.
 
-You are given `app.py`, `requirements.txt`, and `tests/` for each service.
-Nothing here requires writing code; you're setting up a clean, reproducible
-local environment.
+You do **not** write any application code in this step — `app.py`,
+`requirements.txt`, and `tests/` are **provided** for each service. You only set
+up a clean, reproducible local environment and run the tests.
 
 ---
 
-## Why a virtualenv?
+## 1. Why a virtualenv?
 
 Each service declares its own `requirements.txt`. Installing those into your
 global Python pollutes your system and makes "works on my machine" bugs. A
@@ -21,14 +21,13 @@ dependency sets never collide.
 
 ---
 
-## inventory-service
+## 2. Set up inventory-service
 
 > Python 3.12 is assumed (matches the container base image). Use `python3` on
 > macOS/Linux if `python` points at Python 2.
 
-### macOS / Linux (bash)
-
 ```bash
+# macOS / Linux (bash)
 cd inventory-service
 
 python -m venv .venv             # create the virtualenv
@@ -40,9 +39,8 @@ deactivate                       # leave the venv when done
 cd ..
 ```
 
-### Windows (PowerShell)
-
 ```powershell
+# Windows (PowerShell)
 cd inventory-service
 
 python -m venv .venv
@@ -56,15 +54,14 @@ cd ..
 
 ---
 
-## orders-service
+## 3. Set up orders-service
 
 Repeat the exact same flow in the other service. It has its own
 `requirements.txt` (it additionally needs `requests`), so it needs its **own**
 virtualenv.
 
-### macOS / Linux (bash)
-
 ```bash
+# macOS / Linux (bash)
 cd orders-service
 python -m venv .venv
 source .venv/bin/activate
@@ -74,9 +71,8 @@ deactivate
 cd ..
 ```
 
-### Windows (PowerShell)
-
 ```powershell
+# Windows (PowerShell)
 cd orders-service
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -86,9 +82,14 @@ deactivate
 cd ..
 ```
 
+> **Tests can't find `app`?** If `pytest` reports
+> `ModuleNotFoundError: No module named 'app'`, run it as `python -m pytest -q`
+> from inside the service folder — that adds the current directory to the import
+> path so `from app import app` resolves.
+
 ---
 
-## (Optional) Run a service directly
+## 4. (Optional) Run a service directly
 
 With a service's venv activated you can run it without Docker:
 
@@ -100,10 +101,16 @@ curl -s localhost:8080/stock/widget   # {"sku":"widget","quantity":10}
 ```
 
 `orders-service` needs `INVENTORY_URL` to point at a running inventory; that's
-exactly what Compose does for you in [Step 3](03-compose-local.md), so running
+exactly what Compose does for you in [Step 03](03-compose-local.md), so running
 orders standalone is rarely worth it.
 
 ---
+
+## What you learned
+
+- A virtualenv gives each service an isolated, reproducible dependency set, so
+  the two services never collide and "works on my machine" stops being a
+  mystery. Every later step builds on a known-green local baseline.
 
 ## Checklist
 
@@ -111,5 +118,6 @@ orders standalone is rarely worth it.
 - [ ] `orders-service/.venv/` exists and `pytest -q` reports **4 passed**
 - [ ] Neither `.venv/` directory shows up in `git status` (it's gitignored)
 
-Once both suites are green, continue to
-[Step 2 — Containerize each service](02-containerize.md).
+## Next
+
+→ [Step 02 — Containerize each service](02-containerize.md)

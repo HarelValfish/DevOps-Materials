@@ -1,15 +1,15 @@
-# Step 3 — Run both locally with Compose
+# Step 03 — Run both locally with Compose
 
-**Goal:** write `docker-compose.yml` that runs both containers together and
-proves the cross-service call works locally — the same dependency you'll later
-prove in production.
+**Goal:** write `docker-compose.yml` **yourself** that runs both containers
+together and proves the cross-service call works locally — the same dependency
+you'll later prove in production.
 
-No compose file is provided — write `docker-compose.yml` at the **repo root**
-yourself.
+No compose file is provided — you write `docker-compose.yml` at the **repo
+root**.
 
 ---
 
-## Requirements
+## A. Requirements
 
 Your `docker-compose.yml` must define two services:
 
@@ -29,9 +29,13 @@ Your `docker-compose.yml` must define two services:
 Giving a container an explicit `container_name` is optional but makes logs
 easier to read.
 
+*Self-check questions:*
+- Why does `inventory` **not** publish a host port, while `orders` does?
+- If you renamed the `inventory` service, what else would have to change?
+
 ---
 
-## Run it
+## B. Run it
 
 ```bash
 docker compose up --build -d
@@ -51,7 +55,7 @@ talking to each other over the compose network.
 
 ---
 
-## Prove the dependency locally (optional but recommended)
+## C. Prove the dependency locally (optional but recommended)
 
 Stop just inventory and watch orders fail loudly:
 
@@ -64,10 +68,17 @@ docker compose down
 ```
 
 This is the exact failure mode you'll reproduce in production in
-[Step 6](06-deploy-and-verify.md). If it does **not** return `503`, your
+[Step 06](06-deploy-and-verify.md). If it does **not** return `503`, your
 `orders` app is swallowing the connection error instead of surfacing it.
 
 ---
+
+## What you learned
+
+- Containers reach each other by **service name** on the compose network — the
+  same name-as-hostname idea ECS Service Connect uses. Proving the cross-service
+  call (and its failure mode) locally means every later failure is a deploy
+  problem, not an app problem.
 
 ## Checklist
 
@@ -77,7 +88,6 @@ This is the exact failure mode you'll reproduce in production in
 - [ ] `widget` → `confirmed`, `gadget` → `backordered`
 - [ ] Stopping inventory makes `/orders` return `503`
 
-Everything downstream assumes this contract holds — fix it here before touching
-AWS. Reference: `solution/docker-compose.yml`.
+## Next
 
-Next: [Step 4 — Prepare the GitHub repo](04-github-repo.md).
+→ [Step 04 — Prepare the GitHub repo](04-github-repo.md)

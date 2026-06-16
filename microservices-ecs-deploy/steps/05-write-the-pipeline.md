@@ -1,7 +1,7 @@
-# Step 5 — Write the deploy pipeline
+# Step 05 — Write the deploy pipeline
 
-**Goal:** author `.github/workflows/deploy.yml` that builds, pushes, and
-deploys **both** services to ECS on every push to `main` — authenticating
+**Goal:** author `.github/workflows/deploy.yml` **yourself** that builds, pushes,
+and deploys **both** services to ECS on every push to `main` — authenticating
 with OIDC.
 
 This is the core exercise. No starter workflow is provided. Write it to
@@ -9,7 +9,7 @@ satisfy the requirements below.
 
 ---
 
-## Requirements
+## A. Requirements
 
 - [ ] Triggers on push to `main`
 - [ ] `permissions: id-token: write` and `contents: read` (required for OIDC)
@@ -33,7 +33,7 @@ Pin all actions to a major version tag (e.g. `@v4`), not `@main` or a full SHA.
 
 ---
 
-## Hints
+## B. Hints
 
 - The matrix is the trick that deploys two services from one job definition.
   Give each matrix entry everything that differs between the services:
@@ -47,17 +47,30 @@ Pin all actions to a major version tag (e.g. `@v4`), not `@main` or a full SHA.
 - Pass the image from the build step into the render step, and the render
   step's `task-definition` output into the deploy step.
 
+*Self-check questions:*
+- What breaks if you forget `permissions: id-token: write`?
+- Why `fail-fast: false` on the matrix — what does the default behaviour do to
+  the second service when the first fails?
+- Why tag images with `github.sha` instead of `latest`?
+
 ---
 
-## Verify the file before pushing
+## C. Verify the file before pushing
 
 - [ ] `env.AWS_REGION` and `env.ECS_CLUSTER` match the values your instructor
-      used (see [Step 4](04-github-repo.md))
+      used (see [Step 04](04-github-repo.md))
 - [ ] `container-name` in each render maps to the correct container
 - [ ] There is no `aws-access-key-id` anywhere in the file
 - [ ] Every action is pinned to a major version tag
 
-> Reference solution: `solution/.github/workflows/deploy.yml`. Write yours
-> first — copying it defeats the purpose of the step.
+---
 
-Next: [Step 6 — Deploy & verify end-to-end](06-deploy-and-verify.md).
+## What you learned
+
+- A single matrix job can deploy N independent services, each with its own
+  registry, task definition, and ECS service. OIDC + the AWS actions turn
+  "build → push → render → deploy" into a declarative, keyless pipeline.
+
+## Next
+
+→ [Step 06 — Deploy & verify end-to-end](06-deploy-and-verify.md)
