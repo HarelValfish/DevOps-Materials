@@ -28,9 +28,15 @@ Resources you'll create, and how they connect:
 ```
 ecsTaskExecutionRole ─┐
 ECR repos ────────────┤
-CloudWatch log groups ┤──► task definitions ──► ECS services ──► ALB (orders only)
-Cloud Map namespace ──┘                                   └──► Service Connect
+CloudWatch log groups ┤──► task definitions ─┐
+Cloud Map namespace ──┘                       ├──► ECS services ──► ALB (orders only)
+security groups ──────────────────────────────┘             └──► Service Connect
 ```
+
+> **Security groups go in before the services.** They reference each other
+> (`alb-sg → orders-sg → inventory-sg`), so creating them up front (Section G2)
+> means each service just *selects* a ready group — no editing rules after the
+> fact.
 
 ---
 
@@ -215,6 +221,50 @@ After this you should see two task-definition families — `inventory-service` a
 
 ---
 
+## G2. Create the security groups *before* the services
+
+The two services and the load balancer need three security groups, and they
+reference each other:
+
+```
+internet ──80──► alb-sg ──80──► orders-sg ──8080──► inventory-sg
+```
+
+If you let the service wizard create the groups inline (Section H), you hit a
+chicken-and-egg problem: `inventory-sg` wants to allow `orders-sg` as its source,
+but `orders-sg` doesn't exist yet — forcing an awkward "come back and edit it
+later" step. Avoid that entirely by creating all three groups here, in
+**dependency order**, so each one's source already exists when you reference it.
+In Section H you'll then just **select** these existing groups.
+
+> **Same VPC.** Create all three in the **default VPC** — the same VPC bound to
+> the Cloud Map namespace (Section F) and selected for both services (Section H).
+> Security-group rules can only reference other groups in the same VPC.
+
+Open **EC2 → Security Groups → Create security group** and create these **in this
+order** (the order matters — each rule's source must already exist):
+
+1. **`alb-sg`** — public entry point for the load balancer.
+   - **Name:** `alb-sg`; **Description:** `ALB inbound from internet`; **VPC:** default VPC.
+   - **Inbound rule:** **Type** = **HTTP**, **Port** = `80`, **Source** = **Anywhere-IPv4** (`0.0.0.0/0`).
+   - Leave outbound at the default (all traffic). → **Create security group**.
+
+2. **`orders-sg`** — the orders Fargate task; reachable only from the ALB.
+   - **Name:** `orders-sg`; **Description:** `orders task, ALB only`; **VPC:** default VPC.
+   - **Inbound rule:** **Type** = **Custom TCP**, **Port** = `8080`, **Source** = the **`alb-sg`** group (start typing `alb-sg` and pick it). → **Create security group**.
+
+3. **`inventory-sg`** — the inventory Fargate task; reachable only from orders.
+   - **Name:** `inventory-sg`; **Description:** `inventory task, orders only`; **VPC:** default VPC.
+   - **Inbound rule:** **Type** = **Custom TCP**, **Port** = `8080`, **Source** = the **`orders-sg`** group. → **Create security group**.
+
+> **Why these exact rules.** Port `8080` is the container port for *both* services
+> (see the `portMappings` in each task definition). The ALB listens on `80`
+> publicly and forwards to orders on `8080`; orders calls inventory on `8080` over
+> Service Connect. Each group allows *only* its one legitimate caller — defense in
+> depth, not "allow the whole VPC."
+
+---
+
 ## H. Create the two ECS services
 
 This is where the cluster, task definitions, namespace, and networking come
@@ -242,9 +292,9 @@ together. You create **two** services in `microsvc-cluster`. Create
    - **VPC:** the **default VPC** — the same one you bound the Cloud Map namespace
      to in Section F.
    - **Subnets:** leave all the default public subnets selected.
-   - **Security group:** choose **Create a new security group**, name it
-     `inventory-sg`, description anything. Remove any inbound rule it pre-fills —
-     you'll set the real one in step 7.
+   - **Security group:** choose **Use an existing security group** and select
+     **`inventory-sg`** (created in Section G2 — it already allows 8080 from
+     `orders-sg`). Make sure no other group is also selected.
    - **Public IP:** **Turned on**. (On the default VPC's public subnets this lets
      Fargate pull the image from ECR without a NAT gateway — simplest for the lab.)
 5. **Service Connect** (expand it): tick **Use Service Connect**.
@@ -259,12 +309,10 @@ together. You create **two** services in `microsvc-cluster`. Create
 6. **Load balancing:** leave it **off** (the **Load balancer type** stays **None**)
    — inventory is reached only by orders, over Service Connect. Click **Create**
    (bottom-right).
-7. **Open the inbound rule** so orders can reach it later: go to **EC2 → Security
-   Groups**, select `inventory-sg` → **Inbound rules** tab → **Edit inbound rules**
-   → **Add rule**: **Type** = **Custom TCP**, **Port range** = `8080`, **Source** =
-   the `orders-sg` group. You haven't created `orders-sg` yet, so either come back
-   here after H.2, **or** for now set **Source** to the VPC CIDR and tighten it to
-   `orders-sg` after H.2.
+
+> No security-group editing needed here — `inventory-sg` already allows 8080 from
+> `orders-sg` (Section G2). The inbound rule was wired up front precisely so this
+> step has nothing to backfill.
 
 ### H.2 — `orders-service` (public — behind an Application Load Balancer)
 
@@ -277,11 +325,16 @@ together. You create **two** services in `microsvc-cluster`. Create
    - **Service name:** `orders-service`.
    - **Desired tasks:** `1`.
 4. **Networking** (expand): same **default VPC** and subnets. **Security group:**
-   **Create a new security group** named `orders-sg`. **Public IP:** **Turned on**.
+   **Use an existing security group** and select **`orders-sg`** (Section G2 — it
+   allows 8080 from `alb-sg`). **Public IP:** **Turned on**.
 5. **Load balancing** (expand):
    - **Load balancer type:** **Application Load Balancer**.
    - Choose **Create a new load balancer**.
    - **Load balancer name:** `orders-alb`.
+   - **Security group / VPC:** if the wizard lets you pick the ALB's security
+     group, select **`alb-sg`** (Section G2). If this version of the wizard
+     auto-creates an ALB security group instead, leave it — you'll point the ALB
+     at `alb-sg` (or confirm its rule allows 80 from `0.0.0.0/0`) in H.3.
    - **Health check grace period:** leave default (e.g. `60`).
    - **Listener:** **Create new listener** — **Port** `80`, **Protocol** **HTTP**.
    - **Target group:** **Create new target group** — **Name** e.g. `orders-tg`,
@@ -292,12 +345,9 @@ together. You create **two** services in `microsvc-cluster`. Create
    needs to discover orders by name — the public entry point is the ALB).
 7. Click **Create**. ECS provisions the ALB, listener, and target group, then
    launches the orders task and registers it as a target.
-8. **Finish the inventory inbound rule (from H.1 step 7):** in **EC2 → Security
-   Groups**, edit `inventory-sg`'s port-8080 inbound rule so its **Source** is the
-   `orders-sg` group (replace the temporary VPC-CIDR source if you used one). Also
-   confirm the **ALB's** security group has an inbound rule allowing **HTTP port 80
-   from `0.0.0.0/0`** (ECS usually creates this automatically) so the internet can
-   reach orders.
+
+> No backfill here either — all three groups and their rules were created in
+> Section G2. The only thing to verify is the ALB's security group (next step).
 
 > **`INVENTORY_URL`** — orders reads this to find inventory. The provided
 > `orders-service/task-definition.json` should set it to
@@ -312,6 +362,11 @@ together. You create **two** services in `microsvc-cluster`. Create
 
 ### H.3 — Confirm it's healthy
 
+- **Verify the ALB's security group.** In **EC2 → Load Balancers → `orders-alb` →
+  Security** check the attached group. If you were able to attach `alb-sg` in H.2,
+  good. If the wizard auto-created its own group instead, either attach `alb-sg`
+  here, or open that group and confirm it has **inbound HTTP port 80 from
+  `0.0.0.0/0`**. Without this the internet can't reach orders.
 - In **ECS → `microsvc-cluster` → Services**, both `inventory-service` and
   `orders-service` should reach **running count = desired count (1)**.
 - In **EC2 → Target Groups**, the orders target group should list its task as
@@ -339,8 +394,10 @@ together. You create **two** services in `microsvc-cluster`. Create
 - [ ] (E) Cluster `microsvc-cluster` exists on Fargate
 - [ ] (F) Cloud Map namespace `microsvc.local` exists, attached to the cluster's VPC
 - [ ] (G) A revision of each task definition (`inventory-service`, `orders-service`) is registered
-- [ ] (H.1) `inventory-service` runs with Service Connect, **no** ALB
-- [ ] (H.2) `orders-service` runs behind an ALB, with `inventory-sg` allowing 8080 from `orders-sg`
+- [ ] (G2) Three security groups exist: `alb-sg` (80 from `0.0.0.0/0`), `orders-sg` (8080 from `alb-sg`), `inventory-sg` (8080 from `orders-sg`)
+- [ ] (H.1) `inventory-service` runs with Service Connect, **no** ALB, using `inventory-sg`
+- [ ] (H.2) `orders-service` runs behind an ALB, using `orders-sg`
+- [ ] (H.3) ALB security group allows HTTP 80 from `0.0.0.0/0`
 - [ ] (H.3) Both services show running == desired; orders target group is **healthy**
 - [ ] (H.3) You have the **ALB DNS name** noted for Step 07
 
