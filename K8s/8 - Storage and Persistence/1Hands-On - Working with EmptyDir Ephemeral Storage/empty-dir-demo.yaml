@@ -27,4 +27,3 @@ spec:
       emptyDir: {}
         # medium: Memory
         # sizeLimit: 256Mi
-
