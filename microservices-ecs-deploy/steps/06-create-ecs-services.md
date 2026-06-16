@@ -4,6 +4,11 @@
 task definitions, Service Connect namespace, security groups, and load balancer
 you built in [Step 05](05-provision-aws-infra.md).
 
+> The ECR repos are still empty, so the services **won't run yet** — they pull
+> their image only after the pipeline pushes one in [Step 07](07-write-the-pipeline.md),
+> and you confirm they're healthy in [Step 08](08-deploy-and-verify.md). Here you
+> just define the services and their networking.
+
 Create **`inventory-service` first** (orders depends on it).
 
 ---
@@ -69,24 +74,33 @@ Work top to bottom through the wizard sections.
    - This wizard does **not** let you set the ALB's security group; ECS creates one. You'll point the ALB at `alb-sg` (or confirm its rule) in Section C.
 8. Leave the remaining optional sections at defaults → **Create**.
 
+> **The services won't run yet — that's expected.** The ECR repos are still
+> empty (the pipeline pushes images in [Step 07](07-write-the-pipeline.md)), so
+> each task tries to pull `:latest`, fails with `CannotPullContainerError`, and
+> ECS keeps retrying. **Running count stays 0.** You verify the services are
+> healthy in [Step 08](08-deploy-and-verify.md), *after* the first deploy pushes
+> a real image. Don't wait for green here.
+
 ---
 
-## C. Confirm it's healthy
+## C. Configure the ALB security group
 
-- **EC2 → Load Balancers → `orders-alb` → Security:** the wizard auto-created a security group for the ALB. Either replace it with **`alb-sg`** (**Edit security groups**), or open the auto-created group and confirm it allows **inbound HTTP port 80 from `0.0.0.0/0`**.
-- **ECS → `microsvc-cluster` → Services:** both services reach **running count = desired count (1)**.
-- **EC2 → Target Groups:** the orders target group lists its task as **healthy**.
-- **EC2 → Load Balancers → `orders-alb` → DNS name:** copy it (e.g. `orders-alb-123456.eu-west-1.elb.amazonaws.com`) for Step 08.
+The orders service wizard auto-created a security group for the ALB but gave you
+no chance to set it. Fix that now (this is config, not runtime — it doesn't depend
+on a running task):
+
+- **EC2 → Load Balancers → `orders-alb` → Security → Edit security groups:** either attach **`alb-sg`** (and remove the auto-created one), or open the auto-created group and confirm it allows **inbound HTTP port 80 from `0.0.0.0/0`**.
+- **EC2 → Load Balancers → `orders-alb` → DNS name:** copy it (e.g. `orders-alb-123456.eu-west-1.elb.amazonaws.com`) — you'll curl it in [Step 08](08-deploy-and-verify.md).
 
 ---
 
 ## Checklist
 
-- [ ] (A) `inventory-service` runs with Service Connect, no ALB, using `inventory-sg`
-- [ ] (B) `orders-service` runs behind an ALB, using `orders-sg`
+- [ ] (A) `inventory-service` created with Service Connect (Client and server), no ALB, using `inventory-sg`
+- [ ] (B) `orders-service` created behind an ALB, using `orders-sg`
 - [ ] (C) ALB security group allows HTTP 80 from `0.0.0.0/0`
-- [ ] (C) Both services show running == desired; orders target group is **healthy**
 - [ ] (C) ALB DNS name noted for Step 08
+- [ ] Both services exist in the cluster (running count **0** until Step 07/08 — expected)
 
 ## Next
 

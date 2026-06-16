@@ -20,6 +20,11 @@ Because `fail-fast: false`, one failing does not cancel the other.
 
 ## B. Confirm the real deployment
 
+This first deploy is what finally lets the services run: until now the ECR repos
+were empty, so both services sat at **running count 0** with
+`CannotPullContainerError` (Step 06). The pipeline just pushed a real image and
+rolled each service to it — so now they should actually come up.
+
 A green pipeline is necessary but not sufficient — check the running services:
 
 ```bash
@@ -28,7 +33,9 @@ aws ecs describe-services --cluster <cluster-name> \
   --query 'services[].{name:serviceName,running:runningCount,desired:desiredCount}'
 ```
 
-Every service should report `running == desired`.
+Every service should now report `running == desired`. In **EC2 → Target Groups →
+`orders-tg`**, the orders task should also show **healthy** (the ALB's `/health`
+check passes).
 
 Now hit the public ALB (only `orders` is exposed; `inventory` is internal):
 
