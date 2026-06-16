@@ -1,4 +1,4 @@
-# Step 6 — Deploy & verify end-to-end
+# Step 06 — Deploy & verify end-to-end
 
 **Goal:** trigger the pipeline, confirm both services actually deployed, and
 prove the cross-service dependency through the real ALB — not just a green
@@ -6,7 +6,7 @@ pipeline.
 
 ---
 
-## Trigger and watch
+## A. Trigger and watch
 
 ```bash
 git push origin main
@@ -18,7 +18,7 @@ Because `fail-fast: false`, one failing does not cancel the other.
 
 ---
 
-## Confirm the real deployment
+## B. Confirm the real deployment
 
 A green pipeline is necessary but not sufficient — check the running services:
 
@@ -39,12 +39,12 @@ curl -sX POST "http://<alb-dns-name>/orders" -H 'content-type: application/json'
      -d '{"sku":"gadget","quantity":2}'   # expect "backordered"
 ```
 
-This is the same contract you proved locally in [Step 3](03-compose-local.md),
+This is the same contract you proved locally in [Step 03](03-compose-local.md),
 now flowing: ALB → `orders` → Service Connect → `inventory`.
 
 ---
 
-## Bonus — Prove the dependency in production
+## C. Bonus — Prove the dependency in production
 
 Scale inventory to zero and re-test; orders should fail loudly:
 
@@ -59,15 +59,6 @@ aws ecs update-service --cluster <cluster-name> --service inventory-service --de
 
 If this doesn't return `503`, `orders-service` is catching and swallowing the
 connection error instead of surfacing it.
-
----
-
-## Checklist
-
-- [ ] A push to `main` ran your workflow; both matrix jobs went green independently
-- [ ] `aws ecs describe-services` shows both services with `running == desired`
-- [ ] The ALB returns `confirmed` / `backordered` correctly
-- [ ] (Bonus) Scaling inventory to zero makes `/orders` return `503`
 
 ---
 
@@ -88,5 +79,20 @@ In order of likelihood if the deploy fails:
 
 ---
 
-That's the whole lab. You containerized two services, ran them together
-locally, and shipped them to ECS through a keyless OIDC pipeline.
+## What you learned
+
+- A green pipeline is not proof of a working system — you verify the running
+  services and the real cross-service call through the ALB. You containerized
+  two services, ran them together locally, and shipped them to ECS through a
+  keyless OIDC pipeline.
+
+## Checklist
+
+- [ ] A push to `main` ran your workflow; both matrix jobs went green independently
+- [ ] `aws ecs describe-services` shows both services with `running == desired`
+- [ ] The ALB returns `confirmed` / `backordered` correctly
+- [ ] (Bonus) Scaling inventory to zero makes `/orders` return `503`
+
+---
+
+That's the whole lab. 🎉

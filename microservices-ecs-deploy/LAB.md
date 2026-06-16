@@ -65,9 +65,9 @@ orders-service/
 
 You will **write yourself**:
 
-- A `Dockerfile` for each service → [Step 2](steps/02-containerize.md)
-- `docker-compose.yml` to run both together → [Step 3](steps/03-compose-local.md)
-- `.github/workflows/deploy.yml`, the OIDC deploy pipeline → [Step 5](steps/05-write-the-pipeline.md)
+- A `Dockerfile` for each service → [Step 02](steps/02-containerize.md)
+- `docker-compose.yml` to run both together → [Step 03](steps/03-compose-local.md)
+- `.github/workflows/deploy.yml`, the OIDC deploy pipeline → [Step 05](steps/05-write-the-pipeline.md)
 
 ---
 
@@ -115,7 +115,3 @@ until it passes.
 - [ ] A push to `main` runs your workflow; both matrix jobs go green independently ([Step 6](steps/06-deploy-and-verify.md))
 - [ ] `aws ecs describe-services` shows both services with `running == desired`
 - [ ] The ALB returns `confirmed` / `backordered` correctly through the real deployment
-
-> `solution/` contains reference answers (Dockerfiles, `docker-compose.yml`,
-> `deploy.yml`) and the instructor's infra commands. Try each step yourself
-> before looking.
