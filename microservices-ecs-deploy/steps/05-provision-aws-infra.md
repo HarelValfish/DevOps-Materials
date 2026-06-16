@@ -115,15 +115,15 @@ internet ──80──► alb-sg ──80──► orders-sg ──8080──�
 
 Open **EC2 → Security Groups → Create security group**:
 
-1. **`alb-sg`** — VPC: default VPC.
-   - **Inbound:** **Type** **HTTP**, **Port** `80`, **Source** **Anywhere-IPv4** (`0.0.0.0/0`).
+1. **`alb-sg`** — **Description** `ALB inbound from internet`; VPC: default VPC.
+   - **Inbound:** **Type** **HTTP**, **Port** `80`, **Source** **Anywhere-IPv4** (`0.0.0.0/0`), **Description** `HTTP from internet`.
    - Leave outbound at default → **Create security group**.
 
-2. **`orders-sg`** — VPC: default VPC.
-   - **Inbound:** **Type** **Custom TCP**, **Port** `8080`, **Source** the **`alb-sg`** group → **Create security group**.
+2. **`orders-sg`** — **Description** `orders task, ALB only`; VPC: default VPC.
+   - **Inbound:** **Type** **Custom TCP**, **Port** `8080`, **Source** the **`alb-sg`** group, **Description** `8080 from alb-sg` → **Create security group**.
 
-3. **`inventory-sg`** — VPC: default VPC.
-   - **Inbound:** **Type** **Custom TCP**, **Port** `8080`, **Source** the **`orders-sg`** group → **Create security group**.
+3. **`inventory-sg`** — **Description** `inventory task, orders only`; VPC: default VPC.
+   - **Inbound:** **Type** **Custom TCP**, **Port** `8080`, **Source** the **`orders-sg`** group, **Description** `8080 from orders-sg` → **Create security group**.
 
 ---
 
