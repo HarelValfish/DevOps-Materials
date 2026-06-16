@@ -28,9 +28,14 @@ Work top to bottom through the wizard sections.
    - **Security group:** **Use an existing security group** → **`inventory-sg`** (no other group selected).
    - **Public IP:** **Turned on**.
 6. **Service Connect** (expand): tick **Use Service Connect**.
-   - **Namespace:** `microsvc.local`.
-   - **Mode:** **Client and server**.
-   - **Port mapping:** tick the `inventory` port (container port **8080**), set **Port alias / DNS:** `inventory`, **Port:** `8080`.
+   - **Service Connect configuration:** **Client and server**.
+   - **Namespace:** select `microsvc.local`.
+   - Under **Service Connect Service - 1**:
+     - **Port alias:** select `inventory` (the task-definition port-mapping name).
+     - **Discovery:** `inventory`.
+     - **DNS:** `inventory` (this is what makes `inventory.microsvc.local` resolve).
+     - **Port:** `8080`.
+   - Leave traffic encryption off.
 7. **Load balancing:** leave it **off** (no load balancer).
 8. Leave the remaining optional sections at defaults → **Create**.
 
@@ -46,7 +51,7 @@ Work top to bottom through the wizard sections.
 3. **Environment → Compute configuration:** **Compute options** = **Launch type**, **Launch type** = **Fargate**, **Platform version** = **LATEST**.
 4. **Deployment configuration:** **Scheduling strategy:** **Replica**; **Desired tasks:** `1`. Leave AZ rebalancing and health check grace period at defaults.
 5. **Networking** (expand): default VPC and subnets. **Security group:** **Use an existing security group** → **`orders-sg`**. **Public IP:** **Turned on**.
-6. **Service Connect** (expand): tick **Use Service Connect**, **Namespace:** `microsvc.local`, **Mode:** **Client side only**.
+6. **Service Connect** (expand): tick **Use Service Connect**. **Service Connect configuration:** **Client side only**. **Namespace:** select `microsvc.local`. (Client-side mode has no Port alias / DNS card — orders only *calls* inventory, it isn't discovered by name.)
 7. **Load balancing** (expand):
    - **Load balancer type:** **Application Load Balancer**.
    - **Create a new load balancer**.
