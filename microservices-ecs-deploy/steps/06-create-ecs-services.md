@@ -52,20 +52,28 @@ Work top to bottom through the wizard sections.
 4. **Deployment configuration:** **Scheduling strategy:** **Replica**; **Desired tasks:** `1`. Leave AZ rebalancing and health check grace period at defaults.
 5. **Networking** (expand): default VPC and subnets. **Security group:** **Use an existing security group** → **`orders-sg`**. **Public IP:** **Turned on**.
 6. **Service Connect** (expand): tick **Use Service Connect**. **Service Connect configuration:** **Client side only**. **Namespace:** select `microsvc.local`. (Client-side mode has no Port alias / DNS card — orders only *calls* inventory, it isn't discovered by name.)
-7. **Load balancing** (expand):
+7. **Load balancing** (expand): tick **Use load balancing**.
+   - **VPC:** leave the prefilled value (it matches the service VPC).
    - **Load balancer type:** **Application Load Balancer**.
-   - **Create a new load balancer**.
+   - **Container:** select **`orders 8080:8080`** (the orders container's port).
+   - **Application Load Balancer:** **Create a new load balancer**.
    - **Load balancer name:** `orders-alb`.
-   - **Security group:** select **`alb-sg`** if the wizard allows; otherwise verify it in Section C.
    - **Listener:** **Create new listener** — **Port** `80`, **Protocol** **HTTP**.
-   - **Target group:** **Create new target group** — **Name** `orders-tg`, **Protocol** **HTTP**, **Health check path** `/health`.
+   - **Target group:** **Create new target group** —
+     - **Target group name:** `orders-tg`.
+     - **Protocol:** **HTTP**.
+     - **Port:** `80`.
+     - **Deregistration delay:** leave default (`300`).
+     - **Health check protocol:** **HTTP**.
+     - **Health check path:** `/health` (default is `/` — change it).
+   - This wizard does **not** let you set the ALB's security group; ECS creates one. You'll point the ALB at `alb-sg` (or confirm its rule) in Section C.
 8. Leave the remaining optional sections at defaults → **Create**.
 
 ---
 
 ## C. Confirm it's healthy
 
-- **EC2 → Load Balancers → `orders-alb` → Security:** confirm the attached group is `alb-sg`, or that its group allows **inbound HTTP port 80 from `0.0.0.0/0`**.
+- **EC2 → Load Balancers → `orders-alb` → Security:** the wizard auto-created a security group for the ALB. Either replace it with **`alb-sg`** (**Edit security groups**), or open the auto-created group and confirm it allows **inbound HTTP port 80 from `0.0.0.0/0`**.
 - **ECS → `microsvc-cluster` → Services:** both services reach **running count = desired count (1)**.
 - **EC2 → Target Groups:** the orders target group lists its task as **healthy**.
 - **EC2 → Load Balancers → `orders-alb` → DNS name:** copy it (e.g. `orders-alb-123456.eu-west-1.elb.amazonaws.com`) for Step 08.
